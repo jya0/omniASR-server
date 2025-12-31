@@ -1,0 +1,77 @@
+# omniASR Streaming Server - Docker Compose
+#
+# Usage:
+#   GPU:  docker compose up -d
+#   CPU:  docker compose --profile cpu up -d
+#
+# Or use specific service:
+#   docker compose up omniASR-gpu -d
+#   docker compose up omniASR-cpu -d
+
+services:
+  # ============================================
+  # GPU Version (NVIDIA CUDA)
+  # ============================================
+  omniASR-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: omniasr-server:latest
+    container_name: omniasr-gpu
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_CARD=${MODEL_CARD:-omniASR_CTC_300M_v2}
+      - DEFAULT_LANG=${DEFAULT_LANG:-eng_Latn}
+      - HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      # Cache model weights (persist across restarts)
+      - omniasr-cache:/root/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  # ============================================
+  # CPU Version (no GPU required)
+  # ============================================
+  omniASR-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: omniasr-server:latest
+    container_name: omniasr-cpu
+    profiles:
+      - cpu
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_CARD=${MODEL_CARD:-omniASR_CTC_300M_v2}
+      - DEFAULT_LANG=${DEFAULT_LANG:-eng_Latn}
+      - DEVICE=cpu
+      - HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      - omniasr-cache:/root/.cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+volumes:
+  omniasr-cache:
+    name: omniasr-model-cache

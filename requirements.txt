@@ -1,0 +1,19 @@
+# omniASR Streaming Server Dependencies
+
+# Core
+numpy
+torch
+
+# Audio
+soundfile
+sounddevice
+
+# API Server
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic>=2.0
+websockets
+
+# omniASR
+omnilingual-asr
