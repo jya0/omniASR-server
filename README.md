@@ -17,8 +17,8 @@ An OpenAI-compatible ASR (Automatic Speech Recognition) API server powered by Me
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/omniasr-server.git
-cd omniasr-server
+git clone https://github.com/ARahim3/omniASR-server.git
+cd omniASR-server
 
 # Create virtual environment
 python -m venv venv
@@ -109,12 +109,11 @@ asyncio.run(stream_audio())
 ### Voice Agent Integration (Pipecat)
 
 ```python
-from pipecat.services.openai import OpenAISTTService
+from pipecat.services.openai.stt import OpenAISTTService
 
 stt = OpenAISTTService(
     base_url="http://localhost:8000/v1",
     api_key="not-needed",
-    model="omniASR_CTC_300M_v2"
 )
 ```
 
@@ -266,25 +265,7 @@ spec:
 - **LocalAgreement** - Stabilizes streaming output (prevents flickering)
 - **ASRModel** - Wrapper with auto device detection and long audio support
 
-## Performance
 
-### Latency (Streaming)
-
-| Device | Chunk Size | Latency |
-|--------|------------|---------|
-| A100 GPU | 5s | ~50ms |
-| RTX 4090 | 5s | ~100ms |
-| M4 Pro (MPS) | 5s | ~500ms |
-| CPU | 5s | ~5000ms |
-
-### Throughput
-
-| Device | RTF | 1 hour audio processed in |
-|--------|-----|---------------------------|
-| A100 GPU | 0.001 | 3.6 seconds |
-| RTX 4090 | 0.01 | 36 seconds |
-| M4 Pro (MPS) | 0.1 | 6 minutes |
-| CPU | 1.0 | 1 hour |
 
 ## Troubleshooting
 

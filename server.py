@@ -80,7 +80,7 @@ async def health_check():
 @app.post("/v1/audio/transcriptions")
 async def transcribe_audio(
     file: UploadFile = File(...),
-    model_name: str = Form(default="omniASR_CTC_300M_v2", alias="model"),
+    model_name: str = Form(default=None, alias="model"),
     language: str = Form(default=None),
     response_format: str = Form(default="json"),
 ):
@@ -93,6 +93,13 @@ async def transcribe_audio(
 
     if not model or not model.is_loaded:
         raise HTTPException(status_code=503, detail="Model not loaded")
+
+    # Validate model parameter (if provided)
+    if model_name and model_name != model.model_card:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Requested model '{model_name}' not available. Server is running '{model.model_card}'"
+        )
 
     # Validate format
     try:

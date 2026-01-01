@@ -7,8 +7,8 @@ Thank you for your interest in contributing! This document provides guidelines f
 1. Fork the repository
 2. Clone your fork:
    ```bash
-   git clone https://github.com/yourusername/omniasr-server.git
-   cd omniasr-server
+   git clone https://github.com/ARahim3/omniASR-server.git
+   cd omniASR-server
    ```
 3. Create a virtual environment:
    ```bash
