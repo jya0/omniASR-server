@@ -15,6 +15,8 @@ An OpenAI-compatible ASR (Automatic Speech Recognition) API server powered by Me
 
 ### Option 1: Local Installation (Supports CUDA/MPS/CPU)
 
+> **Note:** In your system, audio support requires [libsndfile](https://github.com/facebookresearch/fairseq2?tab=readme-ov-file#system-dependencies) (Mac: `brew install libsndfile`; Windows may need an additional [setup](https://github.com/facebookresearch/fairseq2?tab=readme-ov-file#installing-on-windows))
+
 ```bash
 # Clone the repository
 git clone https://github.com/ARahim3/omniASR-server.git
@@ -321,7 +323,7 @@ spec:
 | Device | Chunk Size | Latency |
 |--------|------------|---------|
 | A100 GPU | 5s | ~50ms |
-| RTX 4050 (laptop) | 5s | ~100ms |
+| RTX 5090 GPU | 5s | ~50ms |
 | M4 Pro (MPS) | 5s | ~50ms |
 | CPU | 5s | ~5s |
 
@@ -330,7 +332,8 @@ spec:
 | Device | RTF | 1 hour audio processed in |
 |--------|-----|---------------------------|
 | A100 GPU | 0.001 | 3.6 seconds |
-| RTX 4050 (laptop) | 0.01 | 36 seconds |
+| RTX 5090 GPU | 0.001 | 3.6 seconds |
+| RTX 4050 (laptop) | 0.05 | 3 minutes |
 | M4 Pro (MPS) | 0.0095 | ~35 seconds |
 | CPU | ~1.0 | 1 hour |
 
