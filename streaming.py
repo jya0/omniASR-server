@@ -27,6 +27,8 @@ import os
 import re
 import soundfile as sf
 import datetime
+import io
+import base64
 
 # Global DF model instance (singleton)
 _DF_MODEL = None
@@ -176,6 +178,7 @@ class StreamingTranscriber:
     _debug_audio_vad: list = field(default_factory=list) # Accumulate VAD audio for debug
 
     def __post_init__(self):
+        print("DEBUG: BASE64 VERSION ACTIVE (StreamingTranscriber initialized)")
         if self.model is None:
             self.model = ASRModel.get_instance()
         if self.buffer is None:
@@ -315,6 +318,7 @@ class StreamingTranscriber:
         # so we correctly capture the tail of the speech.
         if is_speech:
             self.buffer.add(audio)
+            self._debug_audio_vad.append(audio)
 
         results = []
 
@@ -450,42 +454,44 @@ class StreamingTranscriber:
 
         self._started = False
         
-        # Save debug recording
+        # Save debug recording (Base64 Data URI)
         if self._debug_audio:
             try:
+                 # 1. Full Audio (Original/Enhanced)
                  full_audio = np.concatenate(self._debug_audio)
-                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                  
-                 # Ensure debug directory exists
-                 debug_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_audio")
-                 os.makedirs(debug_dir, exist_ok=True)
-                 
-                 filename = f"debug_asr_input_{timestamp}.wav"
-                 filepath = os.path.join(debug_dir, filename)
-                 
-                 sf.write(filepath, full_audio, 16000)
-                 print(f"DEBUG: Saved session audio to {filepath}")
+                 # Write to memory buffer
+                 buf = io.BytesIO()
+                 sf.write(buf, full_audio, 16000, format='WAV')
+                 buf.seek(0)
+                 b64_data = base64.b64encode(buf.read()).decode('utf-8')
+                 data_uri = f"data:audio/wav;base64,{b64_data}"
                  
                  if result:
-                     result.debug_audio_file = filename
+                     result.debug_audio_file = data_uri # Storing URI in 'file' field for transport
                  else:
-                     # Create empty result just to carry the file
                      result = StreamingResult(
                          text="", confirmed_text="", pending_text="", is_final=True, 
-                         debug_audio_file=filename
+                         debug_audio_file=data_uri
                      )
-                     
-                 # Save VAD audio logic (RE-INSERTED)
+                 
+                 # 2. VAD Audio
+                 print(f"DEBUG: VAD Buffer Status - Has Data? {bool(self._debug_audio_vad)}, Chunk Count: {len(self._debug_audio_vad)}")
                  if self._debug_audio_vad:
                      full_audio_vad = np.concatenate(self._debug_audio_vad)
-                     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") # Ensure timestamp available
-                     filename_vad = f"debug_asr_vad_{timestamp}.wav"
-                     filepath_vad = os.path.join(debug_dir, filename_vad)
-                     sf.write(filepath_vad, full_audio_vad, 16000)
-                     print(f"DEBUG: Saved VAD session audio to {filepath_vad}")
-                     result.debug_audio_file_vad = filename_vad
+                     
+                     buf_vad = io.BytesIO()
+                     sf.write(buf_vad, full_audio_vad, 16000, format='WAV')
+                     buf_vad.seek(0)
+                     b64_vad = base64.b64encode(buf_vad.read()).decode('utf-8')
+                     data_uri_vad = f"data:audio/wav;base64,{b64_vad}"
+                     
+                     result.debug_audio_file_vad = data_uri_vad
+                 else:
+                     print("DEBUG: _debug_audio_vad IS EMPTY. No VAD recording generation.")
+                     
             except Exception as e:
-                 print(f"DEBUG: Failed to save audio: {e}")
+                 print(f"DEBUG: Failed to generate debug audio: {e}")
                  
         return result
 

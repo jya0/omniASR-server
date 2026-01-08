@@ -138,6 +138,14 @@
                 if (data.type === "ready") {
                     console.log("Server ready:", data);
                 } else if (data.text !== undefined) {
+                    if (data.is_final) {
+                        console.log("DEBUG: Final Result Received:", data);
+                        if (data.debug_audio_url_vad) {
+                            console.log("DEBUG: Found debug_audio_url_vad:", data.debug_audio_url_vad);
+                        } else {
+                            console.warn("DEBUG: No debug_audio_url_vad in message!");
+                        }
+                    }
                     appendTranscript(data.text, data.confirmed_text, data.pending_text, data.is_final);
 
                     // Show debug audio if present

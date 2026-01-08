@@ -75,7 +75,7 @@ class TenVADConfig:
     """TenVAD settings."""
     
     hop_size: int = 256  # 16 ms per frame (fixed by model)
-    threshold: float = 0.7  # Detection threshold (Higher = More aggressive/Stricter)
+    threshold: float = 0.85  # VERY aggressive (only high confidence speech)
 
 
 @dataclass
@@ -84,8 +84,8 @@ class VADConfig:
 
     enabled: bool = False  # Set False when using external VAD (Pipecat, LiveKit)
     type: str = "ten_vad"  # "rms" or "ten_vad"
-    silence_threshold: float = 0.03  # RMS threshold (Higher = Cuts louder noise)
-    silence_duration: float = 2.0  # seconds of silence = end of utterance
+    silence_threshold: float = 0.05  # RMS threshold
+    silence_duration: float = 0.5  # Keep only 0.5s of silence after speech
     min_speech_duration: float = 0.1  # minimum speech to process
     ten_vad: TenVADConfig = field(default_factory=TenVADConfig)
 

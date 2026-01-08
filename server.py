@@ -367,28 +367,28 @@ async def websocket_transcription(websocket: WebSocket):
                         final = await transcriber.end()
                         if final:
                             # Construct URL if debug file present
+                            # Data URIs (base64) are now returned directly in 'debug_audio_file'
                             debug_url = None
                             if hasattr(final, "debug_audio_file") and final.debug_audio_file:
-                                host = websocket.headers.get("host", f"{config.server.host}:{config.server.port}")
-                                debug_url = f"http://{host}/debug_audio/{final.debug_audio_file}"
+                                debug_url = final.debug_audio_file
                                 
                             debug_url_vad = None
                             if hasattr(final, "debug_audio_file_vad") and final.debug_audio_file_vad:
-                                host = websocket.headers.get("host", f"{config.server.host}:{config.server.port}")
-                                debug_url_vad = f"http://{host}/debug_audio/{final.debug_audio_file_vad}"
+                                debug_url_vad = final.debug_audio_file_vad
 
-                            await websocket.send_json(
-                                StreamingMessage(
-                                    text=final.text,
-                                    confirmed_text=final.confirmed_text,
-                                    pending_text=final.pending_text,
-                                    is_final=True,
-                                    latency_ms=final.latency_ms,
-                                    audio_duration=final.audio_duration,
-                                    debug_audio_url=debug_url,
-                                    debug_audio_url_vad=debug_url_vad
-                                ).model_dump()
-                            )
+                            msg = StreamingMessage(
+                                text=final.text,
+                                confirmed_text=final.confirmed_text,
+                                pending_text=final.pending_text,
+                                is_final=True,
+                                latency_ms=final.latency_ms,
+                                audio_duration=final.audio_duration,
+                                debug_audio_url=debug_url,
+                                debug_audio_url_vad=debug_url_vad
+                            ).model_dump()
+                            
+                            print(f"DEBUG: Sending Final Message to Client: {msg}")
+                            await websocket.send_json(msg)
                         break
 
                 except json.JSONDecodeError:
