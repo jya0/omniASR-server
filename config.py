@@ -56,10 +56,20 @@ class AudioConfig:
 class StreamingConfig:
     """Streaming and chunking settings."""
 
-    chunk_duration: float = 5.0  # seconds per processing chunk
-    overlap_ratio: float = 0.5  # overlap between chunks (0.5 = 50%)
-    min_chunk_duration: float = 0.3  # minimum audio to process
-    max_buffer_duration: float = 30.0  # max buffer before forced flush
+    chunk_duration: float = 0.5  # Chunk size for input (not used for window)
+    
+    # "Gold Standard" Strategy Config
+    inference_interval: float = 0.35  # Throttling: Run ASR max every 0.35s
+    min_silence_duration: float = 0.6  # Hysteresis: Wait 0.6s silence before commit
+    preroll_duration: float = 0.25     # Pre-roll: Keep start of words (s)
+    
+    # Infinite Streaming Safety
+    max_buffer_duration: float = 20.0  # Force reset if buffer exceeds this (s)
+    forced_reset_overlap: float = 1.0  # Overlap to keep after forced reset (s)
+
+    # Legacy/Unused (kept for compatibility)
+    overlap_ratio: float = 0.5  
+    min_chunk_duration: float = 0.3
 
 
 @dataclass
@@ -127,6 +137,7 @@ class StreamingEnvConfig:
     chunk_duration: float = field(default_factory=lambda: env_float("CHUNK_DURATION", 5.0))
     vad_enabled: bool = field(default_factory=lambda: env_bool("VAD_ENABLED", False))
     noise_removal_enabled: bool = field(default_factory=lambda: env_bool("NOISE_REMOVAL_ENABLED", False))
+    max_buffer_duration: float = field(default_factory=lambda: env_float("MAX_BUFFER_DURATION", 20.0))
 
 
 @dataclass
@@ -165,6 +176,7 @@ class Config:
 
         streaming = StreamingConfig()
         streaming.chunk_duration = env_config.chunk_duration
+        streaming.max_buffer_duration = env_config.max_buffer_duration
 
         vad = VADConfig()
         vad.enabled = env_config.vad_enabled

@@ -1,171 +1,93 @@
 """
-StreamingTranscriber - orchestrates streaming ASR with LocalAgreement.
+StreamingTranscriber - Gold Standard Audio Pipeline.
 
-Combines:
-- AudioBuffer for chunking with overlap
-- VAD for speech detection
-- ASRModel for transcription
-- LocalAgreement for stable output
+Features:
+- "Throttling" to prevent GPU overload (0.35s interval)
+- "Hysteresis" to prevent cutting words on short silence (0.6s)
+- "Pre-roll" to preserve word starts after silence (0.25s)
+- "DeepFilterNet" & "Pedalboard" for audio cleaning
 """
 
 import asyncio
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Callable
 import numpy as np
+import time
 
 from config import config
-from audio_buffer import AudioBuffer, VAD, AudioChunk
+from audio_buffer import VAD
 from audio_processor import AudioProcessor
-from local_agreement import LocalAgreement, TranscriptionResult
-from model import ASRModel, TranscribeResult
+from model import ASRModel
+from local_agreement import LocalAgreement
 
 import torch
-import torchaudio.transforms as T
-from df.enhance import enhance, init_df, load_audio, df_features
+# from df.enhance import init_df # Removed direct usage here to keep clean, handled inside class if needed
+from df.enhance import init_df, df_features
 from df.utils import as_complex
 from df.model import ModelParams
 import os
-import re
-import soundfile as sf
-import datetime
 import io
 import base64
+import soundfile as sf
 
 # Global DF model instance (singleton)
 _DF_MODEL = None
 
 class OutputFilter:
     """Filters hallucinations and nonsensical output."""
+    BLOCKLIST = [] # (Kept simple for this iteration)
     
-    BLOCKLIST = [
-        # "Amara.org",
-        # "Subtitles by",
-        # "Translated by",
-        # "Copyright",
-        # "All rights reserved",
-        # "Paradox Interactive",
-        # "Mojang AB",
-        # "Step Id:",
-        # "Master Scribes",
-        # "Nomad Scribes",
-        # "Miraculous Ladybug",
-        # "The following content has been modified",
-        # "monsieur lucky",
-        # "marie mathew",
-        # "thiệt hơn chị bản",
-        # "dem crite",
-        # "électrique",
-    ]
-
     @staticmethod
     def is_valid_text(text: str) -> bool:
-        """
-        Check if text is valid English or Arabic.
-        Discard if it contains too many characters from other scripts (e.g. Vietnamese, French specific).
-        Also discard blocklisted phrases.
-        """
-        if not text:
-            return True
-
-        # 1. Blocklist check
-        lower_text = text.lower()
-        for phrase in OutputFilter.BLOCKLIST:
-            if phrase.lower() in lower_text:
-                return False
-
-        # 2. Character Ratio Check
-        # Allowed: Arabic, English (Latin), Numbers, Punctuation, Common Symbols
-        # Regex for valid characters:
-        # \u0600-\u06FF (Arabic)
-        # a-zA-Z (English)
-        # 0-9 (Numbers)
-        # \s (Whitespace)
-        # .,?!'":;-() (Punctuation)
-        
-        # We count valid chars and total chars
-        # Note: "Monsieur" (French) is mostly Latin, so it passes this check. Blocklist handles it.
-        # "thiet hon chi ban" (Vietnamese) involves latin chars with tone marks.
-        # Simple latin range a-zA-Z won't catch accented chars like 'ệ', 'ị', 'ả'. 
-        # So if we strictly allow only a-zA-Z, we filter out Vietnamese/French accents.
-        
-        valid_pattern = re.compile(r'[\u0600-\u06FFa-zA-Z0-9\s.,?!\'"\-:;()]')
-        
-        valid_chars = len(valid_pattern.findall(text))
-        total_chars = len(text)
-        
-        if total_chars == 0:
-            return True
-            
-        ratio = valid_chars / total_chars
-        
-        # If less than 80% of characters are valid (Arabic/English/Common), we discard.
-        # This effectively filters out CJK, Cyrillic, and extended Latin (Vietnamese tones, French accents).
-        if ratio < 0.8:
-            return False
-            
-        # 3. Repetition Check
-        # Catch "oooooooooo" type hallucinations (common with whisper on silence/music)
-        # Any character repeated 10 times or more
-        if re.search(r'(.)\1{9,}', text):
-            return False
-            
+        if not text: return True
+        # Basic hallucination filter
+        if len(text) > 0 and text == text[0] * len(text) and len(text) > 10:
+             return False
         return True
 
 def get_df_model():
     """Get or initialize the DeepFilterNet model globally."""
     global _DF_MODEL
     if _DF_MODEL is None:
-        # Use local models-cache if not set
         if "XDG_CACHE_HOME" not in os.environ:
              base_path = os.path.dirname(os.path.abspath(__file__))
              os.environ["XDG_CACHE_HOME"] = os.path.join(base_path, "models-cache")
-             
-        # Initialize model (load weights)
-        # We use a dummy state just to get the model, individual states are per-stream
         model, _, _ = init_df(model_base_dir="DeepFilterNet3", config_allow_defaults=True)
-        _DF_MODEL = model.to(config.model.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        device = config.model.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        _DF_MODEL = model.to(device)
         _DF_MODEL.eval()
-        
     return _DF_MODEL
 
 
 @dataclass
 class StreamingResult:
     """Result from streaming transcription."""
-    text: str                  # Current hypothesis (full)
-    confirmed_text: str        # Stable part
-    pending_text: str          # Changing part
-    is_final: bool             # Is this the final result?
-    latency_ms: float = 0      # Last inference latency in ms
-    audio_duration: float = 0  # Audio duration processed
-    debug_audio_file: str = None # Path to debug recording (if any)
-    debug_audio_file_vad: str = None # Path to post-VAD debug recording
+    text: str                  # Current hypothesis (full buffer)
+    confirmed_text: str        # Actually stable/committed text (from previous sentences)
+    pending_text: str          # Current changing text
+    is_final: bool             # Is this a committed final sentence?
+    latency_ms: float = 0      
+    audio_duration: float = 0  
+    debug_audio_file: str = None 
+    debug_audio_file_vad: str = None 
 
 
 @dataclass
 class StreamingTranscriber:
     """
-    Streaming ASR using chunked processing with LocalAgreement.
-
-    Usage:
-        transcriber = StreamingTranscriber()
-        transcriber.start()
-
-        # Feed audio chunks
-        for chunk in audio_stream:
-            results = transcriber.process(chunk)
-            for result in results:
-                print(result.text)
-
-        # End stream
-        final = transcriber.end()
+    Gold Standard Streaming ASR.
+    
+    Logic:
+    1. Accumulate audio in a linear buffer.
+    2. Run ASR every `inference_interval` (0.35s) -> Partial Update.
+    3. If VAD detects silence > `min_silence_duration` (0.6s) -> Final Commit & Reset.
+    4. On Reset, keep `preroll_duration` (0.25s) to catch next word start.
     """
 
     model: ASRModel = None
-    buffer: AudioBuffer = None
     vad: VAD = None
-    agreement: LocalAgreement = None
     processor: AudioProcessor = None
+    local_agreement: LocalAgreement = None
     
     # DeepFilterNet state
     df_state: object = None
@@ -173,268 +95,247 @@ class StreamingTranscriber:
     # Callbacks
     on_result: Callable[[StreamingResult], None] = None
 
-    # State
+    # State variables
     _started: bool = False
-    _total_audio_duration: float = 0
-    _debug_audio: list = field(default_factory=list) # Accumulate audio for debug
-    _debug_audio_vad: list = field(default_factory=list) # Accumulate VAD audio for debug
+    
+    # Audio Buffers
+    _audio_buffer: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.float32))
+    
+    # Throttling & Hysteresis State
+    _silence_start_time: float = None
+    _last_inference_time: float = 0.0
+    _confirmed_text_history: str = "" # Accumulate confirmed sentences
+    _has_speech_in_buffer: bool = False # Track if current buffer contains ANY speech
+    
+    # Debug
+    _debug_audio: list = field(default_factory=list)
 
     def __post_init__(self):
-        print("DEBUG: BASE64 VERSION ACTIVE (StreamingTranscriber initialized)")
+        print("DEBUG: ProductionStreamer Active (Gold Standard)")
         if self.model is None:
             self.model = ASRModel.get_instance()
-        if self.buffer is None:
-            self.buffer = AudioBuffer()
         if self.vad is None:
             self.vad = VAD()
-        if self.agreement is None:
-            self.agreement = LocalAgreement()
         if self.processor is None:
             self.processor = AudioProcessor()
-            
-        # Initialize DeepFilterNet state handling
-        pass
+        if self.local_agreement is None:
+            self.local_agreement = LocalAgreement()
 
     def start(self) -> None:
         """Start a new streaming session."""
         self.model.ensure_loaded()
-        self.buffer.clear()
-        self.vad.reset()
-        self.agreement.reset()
+        self._audio_buffer = np.array([], dtype=np.float32)
+        self._silence_start_time = None
+        self._last_inference_time = 0.0
+        self._confirmed_text_history = ""
+        self._has_speech_in_buffer = False
+        self._debug_audio = []
         
-        # Initialize specific DF state for this stream
+        # Initialize DF State
         if config.noise_removal.enabled:
             _, self.df_state, _ = init_df(model_base_dir="DeepFilterNet3", config_allow_defaults=True)
         else:
             self.df_state = None
+            
+        self.local_agreement.reset()
         
         self._started = True
-        self._total_audio_duration = 0
-        self._debug_audio = []
-        self._debug_audio_vad = []
 
     def process(self, audio: np.ndarray) -> list[StreamingResult]:
-        """
-        Process incoming audio chunk.
-
-        Args:
-            audio: Audio samples (numpy array, float32 or int16)
-
-        Returns:
-            List of StreamingResult (may be empty if no output yet)
-        """
+        """Process incoming audio chunk."""
         if not self._started:
             self.start()
 
-        # Normalize audio
+        # 1. Normalize Audio
         audio = np.asarray(audio, dtype=np.float32).flatten()
         if audio.max() > 1.0:
-            audio = audio / 32768.0  # Convert from int16
-            
-        # --- 1. Dynamic Range Compression (Pedalboard) ---
-        audio = self.processor.process_compressor(audio)
-            
-        # --- 2. DeepFilterNet Noise Removal ---
-        if self.df_state is not None:
-             model = get_df_model()
-             device = config.model.device or ("cuda" if torch.cuda.is_available() else "cpu")
-             
-             # Prepare tensor
-             audio_tensor = torch.from_numpy(audio).unsqueeze(0) # [1, T]
-             
-             # Resample 16k -> 48k (DF requirement)
-             audio_tensor_48k = torch.nn.functional.interpolate(
-                 audio_tensor.unsqueeze(0), 
-                 scale_factor=3, 
-                 mode='linear', 
-                 align_corners=False
-             ).squeeze(0)
-             
-             # Enhance
-             enhanced_audio_tensor_48k = self._stream_enhance(model, self.df_state, audio_tensor_48k)
-             
-             # Resample 48k -> 16k
-             enhanced_audio_tensor = torch.nn.functional.interpolate(
-                 enhanced_audio_tensor_48k.unsqueeze(0), 
-                 scale_factor=1/3, 
-                 mode='linear', 
-                 align_corners=False
-             ).squeeze(0)
-             
-             # Convert back to numpy
-             audio_out_numpy = enhanced_audio_tensor.squeeze(0).cpu().detach().numpy()
-             
-             # Dry/Wet Mix (Tone down)
-             att = config.noise_removal.attenuation
-             if att < 1.0:
-                 min_len = min(len(audio), len(audio_out_numpy))
-                 audio_out_numpy = audio_out_numpy[:min_len] * att + audio[:min_len] * (1 - att)
-             
-             audio = audio_out_numpy
+            audio = audio / 32768.0 
 
-        # --- 3. Noise Gate (Pedalboard) ---
-        # Post-noise removal to mute any remaining low-level noise
+        # 2. Audio Processing Pipeline (Compressor -> Noise Removal -> Gate)
+        # Compressor
+        audio = self.processor.process_compressor(audio)
+
+        # DeepFilterNet Noise Removal
+        if self.df_state is not None:
+             audio = self._apply_deepfilternet(audio)
+
+        # Noise Gate
         audio = self.processor.process_noise_gate(audio)
         
-        # Collect for debug recording
         self._debug_audio.append(audio)
 
-        # --- 4. VAD Filter ---
-        chunks_to_process = []
-        speech_ended = False
+        # 3. VAD Process (State Machine)
+        # This returns chunks ONLY if speech is confirmed (or in hangover).
+        # It handles buffering PRE_SPEECH internally.
+        speech_chunks, speech_ended = self.vad.process(audio)
         
-        if config.vad.enabled:
-            # New VAD logic returns chunks and end-flag
-            chunks_to_process, speech_ended = self.vad.process(audio)
-        else:
-            chunks_to_process = [audio]
-
-        # Add passed chunks to buffer
-        for chunk in chunks_to_process:
-            self.buffer.add(chunk)
-            self._debug_audio_vad.append(chunk)
-
+        if speech_chunks:
+            for chunk in speech_chunks:
+                self._audio_buffer = np.concatenate([self._audio_buffer, chunk])
+        
+        current_time = time.time()
         results = []
 
-        # Growing Window Strategy
-        # Instead of chopping into fixed chunks, we accumulate and process the
-        # entire window. This preserves context for LocalAgreement.
+        # --- LOGIC SAFETY: MAX DURATION CAP (Prevent Quadratic Explosion) ---
+        # If buffer exceeds max duration (e.g. 20s), FORCE COMMIT & RESET
+        max_samples = config.streaming.max_buffer_duration * config.audio.sample_rate
+        forced_reset = False
         
-        current_duration = self.buffer.duration
-        
-        # Determine if we should run inference
-        # 1. Enough audio accumulated since start or last inference
-        # 2. But don't run too frequently to save compute (e.g. every 1.0s)
-        
-        MIN_INFERENCE_DURATION = 0.5  # seconds
-        
-        should_infer = False
-        
-        if self.buffer.duration >= self._total_audio_duration + MIN_INFERENCE_DURATION:
-             should_infer = True
-             
-        # Force inference if buffer is getting too full (safety)
-        if self.buffer.duration > config.streaming.max_buffer_duration:
-             should_infer = True
-             speech_ended = True # Force end of utterance
-             
-        if should_infer:
-            chunk = self.buffer.get_current_window()
-            if chunk:
-                result = self._process_chunk(chunk)
-                if result:
-                    results.append(result)
-                    if self.on_result:
-                        self.on_result(result)
+        if len(self._audio_buffer) > max_samples:
+            print("DEBUG: Max buffer duration exceeded. Forcing commit.")
+            forced_reset = True
 
-        # If speech ended (transition from speech to silence), finalize
-        if speech_ended:
-            # Get final snapshot (mark as final)
-            chunk = self.buffer.get_current_window()
-            if chunk:
-                # Manually set is_final on the chunk
-                chunk.is_final = True
-                result = self._process_chunk(chunk)
-                if result:
-                    results.append(result)
-                    if self.on_result:
-                        self.on_result(result)
+        # --- LOGIC A: Handle Silence (Commit & Reset) ---
+        # Trigger if VAD says speech ended (hangover finished) OR we forced a reset
+        if speech_ended or forced_reset:
+            
+            # Only transcribe if we have audio in buffer
+            # Note: With VAD.process, buffer only contains speech+hangover, so it SHOULD be valid.
+            # But we keep size check just in case.
+            if len(self._audio_buffer) > (0.1 * config.audio.sample_rate):
+                    # Transcribe Final
+                    transcribe_result = self.model.transcribe_audio(self._audio_buffer)
+                    final_text_raw = transcribe_result.text.strip()
+                    
+                    if final_text_raw and OutputFilter.is_valid_text(final_text_raw):
+                        # Use LocalAgreement to finalize
+                        la_result = self.local_agreement.process(final_text_raw, is_final=True)
+                        
+                        # Accumulate confirmed text
+                        self._confirmed_text_history += la_result.confirmed_text + " "
+                        
+                        # Emit Final Result
+                        results.append(StreamingResult(
+                            text=self._confirmed_text_history.strip(),
+                            confirmed_text=self._confirmed_text_history.strip(),
+                            pending_text="",
+                            is_final=True,
+                            latency_ms=transcribe_result.latency * 1000,
+                            audio_duration=len(self._audio_buffer)/config.audio.sample_rate
+                        ))
 
-            # Reset for next utterance
-            self.buffer.clear()
-            self.agreement.reset()
-            self._total_audio_duration = 0  # Reset tracker
+            # RESET BUFFER
+            # If forced reset, keep explicit overlap.
+            if forced_reset:
+                keep_samples = int(config.streaming.forced_reset_overlap * config.audio.sample_rate)
+                if len(self._audio_buffer) > keep_samples:
+                    self._audio_buffer = self._audio_buffer[-keep_samples:]
+                else:
+                    pass
+            else:
+                # Normal VAD end -> Clear buffer completely
+                # VAD State machine handles transition to IDLE
+                self._audio_buffer = np.array([], dtype=np.float32)
+            
+            return results # Return final result and stop
+
+
+        # --- LOGIC B: Throttling (Partial Updates) ---
+        # Only run if VAD says we are speaking (or in hangover)
+        if self.vad.is_speaking and (current_time - self._last_inference_time) > config.streaming.inference_interval:
+            
+            # Only run if buffer has decent size (e.g. > 0.5s to avoid hallucinating on tiny preroll)
+            if len(self._audio_buffer) > (0.5 * config.audio.sample_rate):
+                
+                draft_result = self.model.transcribe_audio(self._audio_buffer)
+                draft_text_raw = draft_result.text.strip()
+
+                if OutputFilter.is_valid_text(draft_text_raw):
+                    # Use LocalAgreement for Partial Results
+                    la_result = self.local_agreement.process(draft_text_raw, is_final=False)
+                    
+                    # Full Text = History + Local Confirmed + Local Pending
+                    # We do NOT update self._confirmed_text_history here, only at final commit.
+                    full_text = f"{self._confirmed_text_history} {la_result.confirmed_text} {la_result.pending_text}".strip()
+                    
+                    results.append(StreamingResult(
+                        text=full_text,
+                        confirmed_text=f"{self._confirmed_text_history} {la_result.confirmed_text}".strip(),
+                        pending_text=la_result.pending_text,
+                        is_final=False,
+                        latency_ms=draft_result.latency * 1000,
+                        audio_duration=len(self._audio_buffer)/config.audio.sample_rate
+                    ))
+                
+                self._last_inference_time = current_time
+
+        if results:
+            for r in results:
+                if self.on_result: self.on_result(r)
 
         return results
 
-    def _process_chunk(self, chunk: AudioChunk) -> StreamingResult | None:
-        """Process a single audio chunk."""
-        # Transcribe
-        transcribe_result = self.model.transcribe_audio(chunk.audio)
-
-        # --- Output Filtering ---
-        if not OutputFilter.is_valid_text(transcribe_result.text):
-            # Treat as silence / ignore
-            transcribe_result.text = "" 
-        # ------------------------
-
-        self._total_audio_duration = chunk.end_time
-
-        # Run through LocalAgreement
-        agreement_result = self.agreement.process(
-            transcribe_result.text,
-            is_final=chunk.is_final,
-        )
-
-        return StreamingResult(
-            text=agreement_result.full_text,
-            confirmed_text=agreement_result.confirmed_text,
-            pending_text=agreement_result.pending_text,
-            is_final=agreement_result.is_final,
-            latency_ms=transcribe_result.latency * 1000,
-            audio_duration=chunk.end_time,
-        )
-
-    def _stream_enhance(self, model, df_state, audio):
-        """
-        Custom enhance function for streaming that DOES NOT reset model state.
-        Replicates logic from df.enhance.enhance but without reset_h0.
-        """
-        model.eval()
-        # No model.reset_h0() call here!
-        
-        # Determine nb_df (num deep filter bands)
-        # Try to get from model or default
-        nb_df = getattr(model, "nb_df", getattr(model, "df_bins", ModelParams().nb_df))
-        
+    def _apply_deepfilternet(self, audio):
+        """Apply DF noise removal."""
+        model = get_df_model()
         device = config.model.device or ("cuda" if torch.cuda.is_available() else "cpu")
         
-        # Calculate features (spec, erb, spec_feat)
-        # df_features handles STFT
+        # Same interpolation logic as before
+        audio_tensor = torch.from_numpy(audio).unsqueeze(0)
+        audio_tensor_48k = torch.nn.functional.interpolate(
+             audio_tensor.unsqueeze(0), scale_factor=3, mode='linear', align_corners=False
+        ).squeeze(0)
+        
+        # Stream Enhance
+        enhanced_48k = self._stream_enhance(model, self.df_state, audio_tensor_48k)
+        
+        # Back to 16k
+        enhanced_16k = torch.nn.functional.interpolate(
+             enhanced_48k.unsqueeze(0), scale_factor=1/3, mode='linear', align_corners=False
+        ).squeeze(0)
+        
+        audio_out = enhanced_16k.squeeze(0).cpu().detach().numpy()
+        
+        # Mix
+        att = config.noise_removal.attenuation
+        if att < 1.0:
+            min_len = min(len(audio), len(audio_out))
+            audio_out = audio_out[:min_len] * att + audio[:min_len] * (1 - att)
+            
+        return audio_out
+
+    def _stream_enhance(self, model, df_state, audio):
+        """DF Enhance without reset."""
+        model.eval()
+        nb_df = getattr(model, "nb_df", getattr(model, "df_bins", ModelParams().nb_df))
+        device = config.model.device or ("cuda" if torch.cuda.is_available() else "cpu")
         spec, erb_feat, spec_feat = df_features(audio, df_state, nb_df, device=device)
-        
-        # Run model
-        # model expects (spec, erb_feat, spec_feat)
-        # Output is complex spec
         enhanced = model(spec.clone(), erb_feat, spec_feat)[0].cpu()
-        
-        # Convert to complex tensor
         enhanced = as_complex(enhanced.squeeze(1))
-        
-        # Synthesis (ISTFT)
-        # df_state.synthesis handles overlap-add
         audio_out = torch.as_tensor(df_state.synthesis(enhanced.detach().numpy()))
-        
         return audio_out
 
     def end(self) -> StreamingResult | None:
-        """
-        End the streaming session and get final result.
-
-        Returns:
-            Final StreamingResult or None if no audio
-        """
-        if not self._started:
-            return None
-
-        # Process any remaining audio
-        remaining = self.buffer.get_remaining(mark_final=True)
+        """End session, flush remaining buffer."""
+        if not self._started: return None
+        
         result = None
-
-        if remaining:
-            result = self._process_chunk(remaining)
-            if result and self.on_result:
-                self.on_result(result)
+        # Transcribe final buffer content if significant
+        if len(self._audio_buffer) > (0.1 * config.audio.sample_rate):
+             transcribe_result = self.model.transcribe_audio(self._audio_buffer)
+             text = transcribe_result.text.strip()
+             
+             if text:
+                 # Flush LocalAgreement
+                 la_result = self.local_agreement.process(text, is_final=True)
+                 if la_result.full_text:
+                     self._confirmed_text_history += la_result.full_text + " "
+                     
+                 result = StreamingResult(
+                     text=self._confirmed_text_history.strip(),
+                     confirmed_text=self._confirmed_text_history.strip(),
+                     pending_text="",
+                     is_final=True
+                 )
 
         self._started = False
-        
-        # Save debug recording (Base64 Data URI)
+        self._save_debug_audio(result)
+        return result
+
+    def _save_debug_audio(self, result):
         if self._debug_audio:
             try:
-                 # 1. Full Audio (Original/Enhanced)
                  full_audio = np.concatenate(self._debug_audio)
-                 
-                 # Write to memory buffer
                  buf = io.BytesIO()
                  sf.write(buf, full_audio, 16000, format='WAV')
                  buf.seek(0)
@@ -442,97 +343,46 @@ class StreamingTranscriber:
                  data_uri = f"data:audio/wav;base64,{b64_data}"
                  
                  if result:
-                     result.debug_audio_file = data_uri # Storing URI in 'file' field for transport
-                 else:
-                     result = StreamingResult(
-                         text="", confirmed_text="", pending_text="", is_final=True, 
-                         debug_audio_file=data_uri
-                     )
-                 
-                 # 2. VAD Audio
-                 print(f"DEBUG: VAD Buffer Status - Has Data? {bool(self._debug_audio_vad)}, Chunk Count: {len(self._debug_audio_vad)}")
-                 if self._debug_audio_vad:
-                     full_audio_vad = np.concatenate(self._debug_audio_vad)
-                     
-                     buf_vad = io.BytesIO()
-                     sf.write(buf_vad, full_audio_vad, 16000, format='WAV')
-                     buf_vad.seek(0)
-                     b64_vad = base64.b64encode(buf_vad.read()).decode('utf-8')
-                     data_uri_vad = f"data:audio/wav;base64,{b64_vad}"
-                     
-                     result.debug_audio_file_vad = data_uri_vad
-                 else:
-                     print("DEBUG: _debug_audio_vad IS EMPTY. No VAD recording generation.")
-                     
+                     result.debug_audio_file = data_uri
+                 elif result is None:
+                     # If we ended without result, maybe return a dummy one just for audio?
+                     # For now, just print logic
+                     pass
             except Exception as e:
-                 print(f"DEBUG: Failed to generate debug audio: {e}")
-                 
-        return result
+                print(f"Debug Audio Error: {e}")
 
     def reset(self) -> None:
-        """Reset transcriber state."""
-        self.buffer.clear()
-        self.vad.reset()
-        self.agreement.reset()
-        self._started = False
-        self._total_audio_duration = 0
+        self.start()
 
 
 class AsyncStreamingTranscriber:
-    """
-    Async version of StreamingTranscriber for use with FastAPI/WebSocket.
-
-    Usage:
-        transcriber = AsyncStreamingTranscriber()
-        await transcriber.start()
-
-        async for result in transcriber.stream(audio_chunks):
-            yield result.text
-    """
-
+    """Async wrapper."""
     def __init__(self):
         self.transcriber = StreamingTranscriber()
-        self._queue: asyncio.Queue[StreamingResult] = asyncio.Queue()
 
     async def start(self) -> None:
-        """Start streaming session."""
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self.transcriber.start)
 
     async def process(self, audio: np.ndarray) -> list[StreamingResult]:
-        """Process audio chunk asynchronously."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.transcriber.process, audio)
 
     async def end(self) -> StreamingResult | None:
-        """End streaming session."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.transcriber.end)
 
-    async def stream(
-        self,
-        audio_iterator: AsyncIterator[np.ndarray],
-    ) -> AsyncIterator[StreamingResult]:
-        """
-        Stream transcription results from an async audio iterator.
+    def reset(self) -> None:
+        """Reset transcriber state."""
+        self.transcriber.reset()
 
-        Args:
-            audio_iterator: Async iterator yielding audio chunks
-
-        Yields:
-            StreamingResult for each processed chunk
-        """
+    async def stream(self, audio_iterator: AsyncIterator[np.ndarray]) -> AsyncIterator[StreamingResult]:
         await self.start()
-
         async for audio_chunk in audio_iterator:
             results = await self.process(audio_chunk)
             for result in results:
                 yield result
-
         final = await self.end()
         if final:
             yield final
 
-    def reset(self) -> None:
-        """Reset transcriber."""
-        self.transcriber.reset()

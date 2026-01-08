@@ -300,8 +300,8 @@ class VAD:
             return 0.0
         return float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
 
-    def _get_raw_decision(self, audio: np.ndarray) -> bool:
-        """Get raw VAD decision for chunk."""
+    def is_speech_now(self, audio: np.ndarray) -> bool:
+        """Get instant VAD decision for chunk."""
         if self.vad_type == "ten_vad":
             return self.ten_vad.is_speech(audio)
         else:
@@ -317,7 +317,7 @@ class VAD:
             - chunks: List of audio chunks to be processed/buffered (if any)
             - speech_ended: True if a confirmed speech segment just finished (transition from Hangover to Idle)
         """
-        is_speech_raw = self._get_raw_decision(audio)
+        is_speech_raw = self.is_speech_now(audio)
         
         output_chunks = []
         speech_ended = False
