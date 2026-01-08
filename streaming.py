@@ -15,6 +15,7 @@ import numpy as np
 
 from config import config
 from audio_buffer import AudioBuffer, VAD, AudioChunk
+from audio_processor import AudioProcessor
 from local_agreement import LocalAgreement, TranscriptionResult
 from model import ASRModel, TranscribeResult
 
@@ -164,6 +165,7 @@ class StreamingTranscriber:
     buffer: AudioBuffer = None
     vad: VAD = None
     agreement: LocalAgreement = None
+    processor: AudioProcessor = None
     
     # DeepFilterNet state
     df_state: object = None
@@ -187,30 +189,10 @@ class StreamingTranscriber:
             self.vad = VAD()
         if self.agreement is None:
             self.agreement = LocalAgreement()
+        if self.processor is None:
+            self.processor = AudioProcessor()
             
-        # Initialize DeepFilterNet state for this session
-        # We need a fresh state for each stream/transcriber to handle overlaps/buffers correctly
-        # init_df returns (model, state, suffix), we just want the state class/object
-        # But init_df actually returns an instantiated state. 
-        # Ideally we should construct DF() directly if we could import it, but init_df configures it.
-        # So we call init_df again? No, that loads model.
-        # Let's inspect how to create state. 
-        # Actually init_df documentation says it returns "df_state (DF): Deep filtering state".
-        # We can probably clone it or create new.
-        # For now, let's call init_df with a known config if possible, or just use the one from get_df_model?
-        # WAIT: DF state maintains buffer for STFT. It IS stateful.
-        # We need a new state per session.
-        # Optimization: We can reconstruct DF state using params from loaded config.
-        # For simplicity and correctness given we can't easily import DF class without libdf:
-        # We'll just use init_df again but it might be slow if it checks model every time.
-        # Alternative: We used `from df.enhance import init_df` which does model loading.
-        # Let's try to grab the class from the global model init if possible? 
-        # Actually, let's look at `df.enhance.init_df`. It creates `df_state = DF(...)`. 
-        # We can just call init_df. To avoid reloading model, maybe we can just ignore the model return.
-        # But `init_df` loads model from efficient checkpoint.
-        # Let's simply call init_df. It's safe but maybe slightly overhead on init.
-        
-        # We will initialize state in start() to ensure reset
+        # Initialize DeepFilterNet state handling
         pass
 
     def start(self) -> None:
@@ -221,17 +203,15 @@ class StreamingTranscriber:
         self.agreement.reset()
         
         # Initialize specific DF state for this stream
-        # This ensures buffers are clear
-        # Initialize DF State
         if config.noise_removal.enabled:
             _, self.df_state, _ = init_df(model_base_dir="DeepFilterNet3", config_allow_defaults=True)
-            # Resamplers replaced by functional interpolate
         else:
             self.df_state = None
         
         self._started = True
         self._total_audio_duration = 0
         self._debug_audio = []
+        self._debug_audio_vad = []
 
     def process(self, audio: np.ndarray) -> list[StreamingResult]:
         """
@@ -251,20 +231,18 @@ class StreamingTranscriber:
         if audio.max() > 1.0:
             audio = audio / 32768.0  # Convert from int16
             
-        # --- DeepFilterNet Noise Removal ---
+        # --- 1. Dynamic Range Compression (Pedalboard) ---
+        audio = self.processor.process_compressor(audio)
+            
+        # --- 2. DeepFilterNet Noise Removal ---
         if self.df_state is not None:
              model = get_df_model()
              device = config.model.device or ("cuda" if torch.cuda.is_available() else "cpu")
              
              # Prepare tensor
-             # audio is (N,) numpy, DF expects (C, T) tensor
-             # enhance expects CPU tensor because it converts to numpy for feature extraction
              audio_tensor = torch.from_numpy(audio).unsqueeze(0) # [1, T]
              
-             # Resample 16k -> 48k using Linear Interpolation to avoid boundary artifacts
-             # T.Resample (Sinc) introduces zero-padding at edges which sounds like "cuts" in streaming.
-             # Linear is safer for chunked streaming.
-             # Input: [1, T] -> Unsqueeze to [1, 1, T] for interpolate
+             # Resample 16k -> 48k (DF requirement)
              audio_tensor_48k = torch.nn.functional.interpolate(
                  audio_tensor.unsqueeze(0), 
                  scale_factor=3, 
@@ -272,13 +250,10 @@ class StreamingTranscriber:
                  align_corners=False
              ).squeeze(0)
              
-             # Enhance (Stream mode)
-             # We manually call DF features and model to avoid calling 'reset_h0' which 'enhance()' does.
-             # This preserves the RNN state for continuous streaming.
+             # Enhance
              enhanced_audio_tensor_48k = self._stream_enhance(model, self.df_state, audio_tensor_48k)
              
              # Resample 48k -> 16k
-             # Use same linear interpolation strategy
              enhanced_audio_tensor = torch.nn.functional.interpolate(
                  enhanced_audio_tensor_48k.unsqueeze(0), 
                  scale_factor=1/3, 
@@ -287,38 +262,37 @@ class StreamingTranscriber:
              ).squeeze(0)
              
              # Convert back to numpy
-             # enhanced is [C, T], we want [T]
              audio_out_numpy = enhanced_audio_tensor.squeeze(0).cpu().detach().numpy()
              
              # Dry/Wet Mix (Tone down)
-             # audio (original) vs audio_out_numpy (enhanced)
-             # Use config attenuation
              att = config.noise_removal.attenuation
              if att < 1.0:
-                 # Ensure lengths match for mixing (interpolation might vary by 1 sample?)
                  min_len = min(len(audio), len(audio_out_numpy))
                  audio_out_numpy = audio_out_numpy[:min_len] * att + audio[:min_len] * (1 - att)
              
              audio = audio_out_numpy
-         # -----------------------------------
-        # -----------------------------------
+
+        # --- 3. Noise Gate (Pedalboard) ---
+        # Post-noise removal to mute any remaining low-level noise
+        audio = self.processor.process_noise_gate(audio)
         
-        # Collect for debug recording (Linear stream, post-enhancement)
+        # Collect for debug recording
         self._debug_audio.append(audio)
 
-        # Check VAD (only if enabled)
-        is_speech = True
+        # --- 4. VAD Filter ---
+        chunks_to_process = []
         speech_ended = False
         
         if config.vad.enabled:
-            is_speech, speech_ended = self.vad.process(audio)
+            # New VAD logic returns chunks and end-flag
+            chunks_to_process, speech_ended = self.vad.process(audio)
+        else:
+            chunks_to_process = [audio]
 
-        # Only add to buffer if speech is detected (or VAD disabled)
-        # Note: VAD.is_speech remains True during the silence_duration (hangover),
-        # so we correctly capture the tail of the speech.
-        if is_speech:
-            self.buffer.add(audio)
-            self._debug_audio_vad.append(audio)
+        # Add passed chunks to buffer
+        for chunk in chunks_to_process:
+            self.buffer.add(chunk)
+            self._debug_audio_vad.append(chunk)
 
         results = []
 

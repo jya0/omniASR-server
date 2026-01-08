@@ -130,6 +130,21 @@ class StreamingEnvConfig:
 
 
 @dataclass
+class CompressorConfig:
+    enabled: bool = True
+    threshold_db: float = -20.0
+    ratio: float = 4.0
+    attack_ms: float = 5.0
+    release_ms: float = 50.0
+
+
+@dataclass
+class NoiseGateConfig:
+    enabled: bool = True
+    threshold_db: float = -40.0  # Mute anything below this
+
+
+@dataclass
 class Config:
     """Main configuration container."""
 
@@ -137,7 +152,9 @@ class Config:
     streaming: StreamingConfig
     local_agreement: LocalAgreementConfig
     vad: VADConfig
+    compressor: CompressorConfig
     noise_removal: NoiseRemovalConfig
+    noise_gate: NoiseGateConfig
     model: ModelConfig
     server: ServerConfig
 
@@ -160,7 +177,9 @@ class Config:
             streaming=streaming,
             local_agreement=LocalAgreementConfig(),
             vad=VADConfig(ten_vad=TenVADConfig()),
+            compressor=CompressorConfig(),
             noise_removal=noise_removal,
+            noise_gate=NoiseGateConfig(),
             model=ModelConfig(),
             server=ServerConfig(),
         )

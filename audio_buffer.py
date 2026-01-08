@@ -247,17 +247,35 @@ class AudioBuffer:
         return (self._total_samples - self._processed_until) / self.sample_rate
 
 
+class VADState:
+    IDLE = 0
+    PRE_SPEECH = 1
+    SPEECH = 2
+    HANGOVER = 3
+
+
 class VAD:
-    """Simple Voice Activity Detection based on RMS energy."""
+    """
+    Advanced Voice Activity Detection with State Machine.
+    Filters short events and manages hangover (silence tail).
+    
+    States:
+    - IDLE: Waiting for speech. Drops audio.
+    - PRE_SPEECH: Potential speech detected. Buffering to verify length.
+    - SPEECH: Confirmed speech. Passing audio through.
+    - HANGOVER: Speech ended, keeping silence tail.
+    """
 
     def __init__(
         self,
         threshold: float = None,
         silence_duration: float = None,
+        min_speech_duration: float = None,
         sample_rate: int = None,
     ):
         self.threshold = threshold or config.vad.silence_threshold
         self.silence_duration = silence_duration or config.vad.silence_duration
+        self.min_speech_duration = min_speech_duration or config.vad.min_speech_duration
         self.sample_rate = sample_rate or config.audio.sample_rate
         self.vad_type = config.vad.type
 
@@ -269,51 +287,111 @@ class VAD:
         else:
             self.ten_vad = None
 
-        self._silence_samples = 0
+        # State Machine
+        self.state = VADState.IDLE
+        self._candidate_buffer: list[np.ndarray] = []
+        self._candidate_duration: float = 0.0
+        self._hangover_samples = 0
         self._is_speaking = False
 
     def get_rms(self, audio: np.ndarray) -> float:
         """Calculate RMS energy of audio."""
+        if len(audio) == 0:
+            return 0.0
         return float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
 
-    def process(self, audio: np.ndarray) -> tuple[bool, bool]:
-        """
-        Process audio chunk and detect voice activity.
-
-        Returns:
-            (is_speech, speech_ended):
-            - is_speech: True if current chunk contains speech
-            - speech_ended: True if speech just ended (silence detected after speech)
-        """
+    def _get_raw_decision(self, audio: np.ndarray) -> bool:
+        """Get raw VAD decision for chunk."""
         if self.vad_type == "ten_vad":
-            is_speech = self.ten_vad.is_speech(audio)
+            return self.ten_vad.is_speech(audio)
         else:
             rms = self.get_rms(audio)
-            is_speech = rms > self.threshold
+            return rms > self.threshold
+
+    def process(self, audio: np.ndarray) -> tuple[list[np.ndarray], bool]:
+        """
+        Process audio chunk through VAD State Machine.
+
+        Returns:
+            (chunks, speech_ended):
+            - chunks: List of audio chunks to be processed/buffered (if any)
+            - speech_ended: True if a confirmed speech segment just finished (transition from Hangover to Idle)
+        """
+        is_speech_raw = self._get_raw_decision(audio)
         
+        output_chunks = []
         speech_ended = False
 
-        if is_speech:
-            self._silence_samples = 0
-            self._is_speaking = True
-        else:
-            if self._is_speaking:
-                self._silence_samples += len(audio)
-                if self._silence_samples >= self.silence_duration * self.sample_rate:
+        if self.state == VADState.IDLE:
+            if is_speech_raw:
+                self.state = VADState.PRE_SPEECH
+                self._candidate_buffer.append(audio)
+                self._candidate_duration += len(audio) / self.sample_rate
+            # Else: Drop audio (Silence/Noise)
+            self._is_speaking = False
+
+        elif self.state == VADState.PRE_SPEECH:
+            if is_speech_raw:
+                self._candidate_buffer.append(audio)
+                self._candidate_duration += len(audio) / self.sample_rate
+                
+                # Check if enough duration to confirm speech
+                if self._candidate_duration >= self.min_speech_duration:
+                    self.state = VADState.SPEECH
+                    # Flush candidate buffer
+                    output_chunks.extend(self._candidate_buffer)
+                    self._candidate_buffer = []
+                    self._candidate_duration = 0.0
+                    self._is_speaking = True
+            else:
+                # Lost speech before confirmation -> False alarm / Short click
+                # Discard buffer and return to IDLE
+                self.state = VADState.IDLE
+                self._candidate_buffer = []
+                self._candidate_duration = 0.0
+                self._is_speaking = False
+
+        elif self.state == VADState.SPEECH:
+            if is_speech_raw:
+                output_chunks.append(audio)
+                self._is_speaking = True
+            else:
+                # Speech detected false -> Enter HANGOVER
+                self.state = VADState.HANGOVER
+                self._hangover_samples = len(audio) # Initialize with current chunk
+                output_chunks.append(audio) # Keep this chunk as part of tail
+                self._is_speaking = True # Still "speaking" logically for the system
+
+        elif self.state == VADState.HANGOVER:
+            if is_speech_raw:
+                # Resumed speaking
+                self.state = VADState.SPEECH
+                output_chunks.append(audio)
+                self._is_speaking = True
+            else:
+                # Continuing silence
+                output_chunks.append(audio)
+                self._hangover_samples += len(audio)
+                
+                if self._hangover_samples >= (self.silence_duration * self.sample_rate):
+                    # Hangover finished -> End of utterance
+                    self.state = VADState.IDLE
                     speech_ended = True
                     self._is_speaking = False
-                    self._silence_samples = 0
 
-        return is_speech, speech_ended
+        return output_chunks, speech_ended
 
     def reset(self) -> None:
         """Reset VAD state."""
-        self._silence_samples = 0
+        self.state = VADState.IDLE
+        self._candidate_buffer = []
+        self._candidate_duration = 0.0
+        self._hangover_samples = 0
         self._is_speaking = False
         if self.ten_vad:
             self.ten_vad.reset()
 
     @property
     def is_speaking(self) -> bool:
-        """Check if currently in speech."""
+        """Check if currently in speech OR hangover."""
         return self._is_speaking
