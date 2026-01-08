@@ -6,6 +6,14 @@ Tests:
 2. WebSocket client test
 """
 
+import os
+
+from pathlib import Path
+
+# Use local models-cache folder by default
+base_path = Path(__file__).parent
+os.environ["XDG_CACHE_HOME"] = os.getenv("XDG_CACHE_HOME", str(base_path / "models-cache"))
+
 import argparse
 import asyncio
 import json

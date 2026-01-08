@@ -1,45 +1,7 @@
-# Git
 .git
-.gitignore
-
-# Python
 __pycache__
-*.py[cod]
-*$py.class
-*.so
-.Python
-.venv
+*.pyc
+.env
 venv
-ENV
-env
+.venv
 
-# IDE
-.idea
-.vscode
-*.swp
-*.swo
-
-# Testing
-.pytest_cache
-.coverage
-htmlcov
-
-# Docker
-Dockerfile
-docker-compose*.yml
-.docker
-
-# Docs
-*.md
-!requirements.txt
-
-# Temp files
-*.log
-*.tmp
-.DS_Store
-
-# Audio test files
-*.wav
-*.mp3
-*.flac
-*.ogg

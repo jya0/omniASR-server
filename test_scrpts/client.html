@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>omniASR Streaming Client</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+            line-height: 1.5;
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        #status {
+            font-weight: bold;
+            margin-bottom: 1rem;
+            padding: 0.5rem;
+            border-radius: 4px;
+        }
+
+        .status-disconnected {
+            background: #fee;
+            color: #c33;
+        }
+
+        .status-connected {
+            background: #eef;
+            color: #33c;
+        }
+
+        .status-recording {
+            background: #efe;
+            color: #3c3;
+        }
+
+        #transcript {
+            white-space: pre-wrap;
+            margin-top: 1rem;
+            border: 1px solid #ccc;
+            padding: 1rem;
+            min-height: 200px;
+            border-radius: 4px;
+            background: #f9f9f9;
+            font-size: 1.1rem;
+            line-height: 1.6;
+        }
+
+        .confirmed {
+            color: #000;
+        }
+
+        .pending {
+            color: #888;
+            font-style: italic;
+        }
+
+        button {
+            padding: 0.5rem 1rem;
+            font-size: 1rem;
+            cursor: pointer;
+            margin-right: 0.5rem;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>omniASR Streaming Client</h1>
+    <div id="status" class="status-disconnected">Status: Disconnected</div>
+
+    <div>
+        <button id="btnConnect">Connect</button>
+        <button id="btnStart" disabled>Start Microphone</button>
+        <button id="btnStop" disabled>Stop</button>
+    </div>
+
+    <div id="transcript"></div>
+
+    <script>
+        const SAMPLE_RATE = 16000;
+        let ws = null;
+        let audioContext = null;
+        let processor = null;
+        let inputStream = null;
+
+        const btnConnect = document.getElementById('btnConnect');
+        const btnStart = document.getElementById('btnStart');
+        const btnStop = document.getElementById('btnStop');
+        const statusDiv = document.getElementById('status');
+        const transcriptDiv = document.getElementById('transcript');
+
+        let finalTranscript = "";
+
+        function setStatus(text, type) {
+            statusDiv.textContent = `Status: ${text}`;
+            statusDiv.className = `status-${type}`;
+        }
+
+        function appendTranscript(text, confirmed, pending, isFinal) {
+            if (isFinal) {
+                finalTranscript += text + "\n";
+                transcriptDiv.innerHTML = `<span class="confirmed">${finalTranscript}</span>`;
+            } else {
+                // Display history + confirmed part of current + pending part of current
+                // If confirmed/pending are not sent by old servers, fallback to 'text' as pending
+                let currentConfirmed = confirmed || "";
+                let currentPending = pending || (confirmed ? "" : text);
+
+                transcriptDiv.innerHTML = `<span class="confirmed">${finalTranscript}${currentConfirmed}</span><span class="pending">${currentPending}</span>`;
+            }
+            // Auto scroll
+            transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+        }
+
+        btnConnect.onclick = async () => {
+            const host = window.location.hostname || "localhost";
+            ws = new WebSocket(`ws://${host}:8000/v1/audio/transcriptions`);
+
+            ws.onopen = () => {
+                setStatus("Connected", "connected");
+                btnConnect.disabled = true;
+                btnStart.disabled = false;
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === "ready") {
+                    console.log("Server ready:", data);
+                } else if (data.text !== undefined) {
+                    appendTranscript(data.text, data.confirmed_text, data.pending_text, data.is_final);
+
+                    // Show debug audio if present
+                    if (data.debug_audio_url && data.is_final) {
+                        const audioContainer = document.createElement("div");
+                        audioContainer.innerHTML = `<p><strong>Original+Enhanced Debug Audio:</strong> <a href="${data.debug_audio_url}" target="_blank">Download</a></p>
+                            <audio controls src="${data.debug_audio_url}"></audio>`;
+                        transcriptDiv.appendChild(audioContainer);
+                        transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+                    }
+
+                    // Show VAD debug audio if present
+                    if (data.debug_audio_url_vad && data.is_final) {
+                        const audioContainer = document.createElement("div");
+                        audioContainer.innerHTML = `<p><strong>Post-VAD Debug Audio:</strong> <a href="${data.debug_audio_url_vad}" target="_blank">Download</a></p>
+                            <audio controls src="${data.debug_audio_url_vad}"></audio>`;
+                        transcriptDiv.appendChild(audioContainer);
+                        transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+                    }
+                } else if (data.type === "error") {
+                    console.error("Server error:", data);
+                    alert("Server Error: " + data.message);
+                }
+            };
+
+            ws.onclose = () => {
+                setStatus("Disconnected", "disconnected");
+                btnConnect.disabled = false;
+                btnStart.disabled = true;
+                btnStop.disabled = true;
+                stopRecording();
+            };
+
+            ws.onerror = (err) => {
+                console.error("WebSocket error:", err);
+                setStatus("Error (Check Console)", "disconnected");
+            };
+        };
+
+        btnStart.onclick = async () => {
+            try {
+                // Initialize Audio Context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+
+                // Get Microphone Stream
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                inputStream = stream;
+
+                // Create Source
+                const source = audioContext.createMediaStreamSource(stream);
+
+                // Create Processor (ScriptProcessorNode is deprecated but widely supported for simple tasks)
+                // Buffer size 4096 gives ~256ms latency at 16k.
+                // Larger buffer helps prevents dropped frames if main thread is busy.
+                processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+                source.connect(processor);
+                processor.connect(audioContext.destination); // Start processing
+
+                processor.onaudioprocess = (e) => {
+                    const inputData = e.inputBuffer.getChannelData(0);
+
+                    // Convert Float32 to Int16
+                    const buffer = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        // Clamp and scale
+                        let s = Math.max(-1, Math.min(1, inputData[i]));
+                        buffer[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                    }
+
+                    // Send to WS if open
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(buffer.buffer);
+                    }
+                };
+
+                // Send config to server
+                ws.send(JSON.stringify({
+                    type: "config",
+                    sample_rate: SAMPLE_RATE
+                }));
+
+                setStatus("Recording...", "recording");
+                btnStart.disabled = true;
+                btnStop.disabled = false;
+
+            } catch (err) {
+                console.error("Mic error:", err);
+                alert("Could not access microphone. Ensure you are allowing access.");
+            }
+        };
+
+        function stopRecording() {
+            if (inputStream) {
+                inputStream.getTracks().forEach(track => track.stop());
+                inputStream = null;
+            }
+            if (processor) {
+                processor.disconnect();
+                processor = null;
+            }
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            if (ws && ws.readyState === WebSocket.OPEN && btnStop.disabled === false) {
+                ws.send(JSON.stringify({ type: "end" }));
+            }
+
+            btnStart.disabled = ws && ws.readyState === WebSocket.OPEN ? false : true;
+            btnStop.disabled = true;
+            if (ws && ws.readyState === WebSocket.OPEN) setStatus("Connected", "connected");
+        }
+
+        btnStop.onclick = stopRecording;
+    </script>
+</body>
+
+</html>

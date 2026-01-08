@@ -3,66 +3,98 @@
 # Note: MPS (Apple Silicon) not available in Docker
 
 # ============================================
-# Base image with CUDA support
+# Stage 1: Builder
 # ============================================
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+FROM nvidia/cuda:12.6.3-runtime-ubuntu24.04 AS builder
 
-# Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Set working directory
+# Install system dependencies for building
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-dev \
+    python3-venv \
+    libsndfile1 \
+    git \
+    curl \
+    build-essential \
+    cmake \
+    ca-certificates
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
 WORKDIR /app
 
-# Install system dependencies + uv
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Create virtual environment
+RUN python3 -m venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
+ENV VIRTUAL_ENV="/app/.venv"
+
+# Install dependencies
+COPY requirements.txt .
+COPY ten-vad ./ten-vad
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install -r requirements.txt && \
+    uv pip install ./ten-vad
+
+# ============================================
+# Stage 2: Runtime
+# ============================================
+FROM nvidia/cuda:12.6.3-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install runtime system dependencies
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
     libsndfile1 \
     ffmpeg \
-    curl \
-    cmake \
-    build-essential \
-    g++ \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -LsSf https://astral.sh/uv/install.sh | sh
+    curl
 
-# Add uv to PATH
-ENV PATH="/root/.local/bin:$PATH"
+WORKDIR /app
+
+# Copy virtual environment from builder
+COPY --from=builder /app/.venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
 
 # ============================================
-# Python dependencies
+# Models (Cached Layer)
 # ============================================
-COPY requirements.txt .
-
-# Install Python packages with uv (much faster)
-RUN uv pip install --system --no-cache -r requirements.txt
+# Copy models cache BEFORE app code so code changes don't invalidate the layer
+ENV FAIRSEQ2_CACHE_DIR=/models/fairseq2/assets
+COPY models-cache /models
+RUN chmod -R a+rX /models
 
 # ============================================
 # Application code
 # ============================================
-COPY . .
+COPY *.py .
+COPY *.html .
 
 # ============================================
 # Configuration
 # ============================================
 # Server settings
 ENV HOST=0.0.0.0
-ENV PORT=8000
+ENV PORT=8080
 
-# Model settings (can be overridden)
-ENV MODEL_CARD=omniASR_CTC_300M_v2
-ENV DEFAULT_LANG=eng_Latn
+# Environment variables from .env
+ENV MAX_CONCURRENT_REQUESTS=100
+ENV MAX_WEBSOCKET_CONNECTIONS=50
+ENV CHUNK_DURATION=3.0
+ENV VAD_ENABLED=true
 
-# Device auto-detection (cuda if available, else cpu)
-# Can override with: ENV DEVICE=cuda or ENV DEVICE=cpu
+# Model settings
+ENV MODEL_CARD=omniASR_LLM_1B_v2
+ENV DEFAULT_LANG=
+ENV DEVICE=
 
-# ============================================
-# Health check
-# ============================================
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
-
-# ============================================
-# Expose port and run
-# ============================================
+# Expose port
 EXPOSE ${PORT}
 
 # Run the server

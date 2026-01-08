@@ -46,6 +46,8 @@ class StreamingMessage(BaseModel):
     is_final: bool = False
     latency_ms: float = 0
     audio_duration: float = 0
+    debug_audio_url: Optional[str] = None
+    debug_audio_url_vad: Optional[str] = None
 
 
 class WebSocketConfig(BaseModel):

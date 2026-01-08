@@ -1,3 +1,12 @@
+import os
+
+from pathlib import Path
+
+# Use local models-cache folder by default
+base_path = Path(__file__).parent
+os.environ["XDG_CACHE_HOME"] = os.getenv("XDG_CACHE_HOME", str(base_path / "models-cache"))
+# os.environ["XDG_CACHE_HOME"] = os.getenv("XDG_CACHE_HOME", str(base_path / "models-cache-bc"))
+
 """
 omniASR Streaming Server - OpenAI-compatible ASR API.
 
@@ -107,6 +116,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+from fastapi.staticfiles import StaticFiles
+debug_dir = Path(__file__).parent / "debug_audio"
+debug_dir.mkdir(exist_ok=True)
+app.mount("/debug_audio", StaticFiles(directory=str(debug_dir)), name="debug_audio")
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -129,6 +143,26 @@ async def health_check():
         active_requests=stats["active_requests"],
         active_websockets=stats["active_websockets"],
     )
+
+
+@app.get("/health-check", response_model=HealthResponse)
+async def health_check_alias():
+    """Alias for health check."""
+    return await health_check()
+
+
+@app.get("/v1/models")
+async def list_models():
+    """List available models (OpenAI-compatible)."""
+    return {
+        "object": "list",
+        "data": [{
+            "id": config.model.model_card,
+            "object": "model",
+            "created": 1677610602,
+            "owned_by": "openai"
+        }]
+    }
 
 
 @app.post("/v1/audio/transcriptions")
@@ -332,6 +366,17 @@ async def websocket_transcription(websocket: WebSocket):
                         # End stream and send final result
                         final = await transcriber.end()
                         if final:
+                            # Construct URL if debug file present
+                            debug_url = None
+                            if hasattr(final, "debug_audio_file") and final.debug_audio_file:
+                                host = websocket.headers.get("host", f"{config.server.host}:{config.server.port}")
+                                debug_url = f"http://{host}/debug_audio/{final.debug_audio_file}"
+                                
+                            debug_url_vad = None
+                            if hasattr(final, "debug_audio_file_vad") and final.debug_audio_file_vad:
+                                host = websocket.headers.get("host", f"{config.server.host}:{config.server.port}")
+                                debug_url_vad = f"http://{host}/debug_audio/{final.debug_audio_file_vad}"
+
                             await websocket.send_json(
                                 StreamingMessage(
                                     text=final.text,
@@ -340,6 +385,8 @@ async def websocket_transcription(websocket: WebSocket):
                                     is_final=True,
                                     latency_ms=final.latency_ms,
                                     audio_duration=final.audio_duration,
+                                    debug_audio_url=debug_url,
+                                    debug_audio_url_vad=debug_url_vad
                                 ).model_dump()
                             )
                         break

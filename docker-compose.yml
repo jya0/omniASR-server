@@ -42,6 +42,28 @@ services:
       timeout: 10s
       retries: 3
       start_period: 120s
+  omniASR-gpu-adeo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: adeo-omniasr-server:latest
+    container_name: omniasr-gpu
+    ports:
+      - "8080:8080"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
 
   # ============================================
   # CPU Version (no GPU required)
@@ -75,3 +97,9 @@ services:
 volumes:
   omniasr-cache:
     name: omniasr-model-cache
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /home/jyao/adeo-custom/speech2text/omniASR-server/models-cache
+

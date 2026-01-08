@@ -5,6 +5,56 @@ from dataclasses import dataclass
 from config import config
 
 
+try:
+    from ten_vad import TenVad
+except ImportError:
+    TenVad = None
+
+
+class TenVADWrapper:
+    """Wrapper for TenVAD handling buffering and conversion."""
+    
+    def __init__(self, hop_size: int = 256, threshold: float = 0.5):
+        if TenVad is None:
+            raise ImportError("TenVAD not installed. Use 'rms' VAD type or install ten-vad.")
+            
+        self.vad = TenVad(hop_size, threshold)
+        self.hop_size = hop_size
+        self._buffer = np.array([], dtype=np.int16)
+        
+    def is_speech(self, audio: np.ndarray) -> bool:
+        """
+        Check if audio chunk contains speech.
+        
+        Args:
+            audio: Float32 audio chunk (-1.0 to 1.0)
+            
+        Returns:
+            True if any frame in the chunk is detected as speech.
+        """
+        # Convert to int16
+        audio_int16 = (audio * 32768).astype(np.int16)
+        
+        # Add to buffer
+        self._buffer = np.concatenate([self._buffer, audio_int16])
+        
+        # Process all complete frames
+        has_speech = False
+        
+        while len(self._buffer) >= self.hop_size:
+            frame = self._buffer[:self.hop_size]
+            self._buffer = self._buffer[self.hop_size:]
+            
+            _, is_speech_frame = self.vad.process(frame)
+            if is_speech_frame:
+                has_speech = True
+                
+        return has_speech
+
+    def reset(self):
+        """Reset buffer."""
+        self._buffer = np.array([], dtype=np.int16)
+
 @dataclass
 class AudioChunk:
     """A chunk of audio with metadata."""
@@ -146,6 +196,22 @@ class AudioBuffer:
             is_final=mark_final,
         )
 
+    def get_current_window(self) -> AudioChunk | None:
+        """
+        Get all accumulated audio in the buffer (Growing Window).
+        Does NOT advance the processed pointer.
+        """
+        full = self._get_full_buffer()
+        if len(full) == 0:
+            return None
+            
+        return AudioChunk(
+            audio=full,
+            start_time=0.0,  # Relative to start of buffer/utterance
+            end_time=len(full) / self.sample_rate,
+            is_final=False
+        )
+
     def clear(self) -> None:
         """Clear the buffer."""
         self._buffer = []
@@ -193,6 +259,15 @@ class VAD:
         self.threshold = threshold or config.vad.silence_threshold
         self.silence_duration = silence_duration or config.vad.silence_duration
         self.sample_rate = sample_rate or config.audio.sample_rate
+        self.vad_type = config.vad.type
+
+        if self.vad_type == "ten_vad":
+            self.ten_vad = TenVADWrapper(
+                hop_size=config.vad.ten_vad.hop_size,
+                threshold=config.vad.ten_vad.threshold
+            )
+        else:
+            self.ten_vad = None
 
         self._silence_samples = 0
         self._is_speaking = False
@@ -210,8 +285,12 @@ class VAD:
             - is_speech: True if current chunk contains speech
             - speech_ended: True if speech just ended (silence detected after speech)
         """
-        rms = self.get_rms(audio)
-        is_speech = rms > self.threshold
+        if self.vad_type == "ten_vad":
+            is_speech = self.ten_vad.is_speech(audio)
+        else:
+            rms = self.get_rms(audio)
+            is_speech = rms > self.threshold
+        
         speech_ended = False
 
         if is_speech:
@@ -231,6 +310,8 @@ class VAD:
         """Reset VAD state."""
         self._silence_samples = 0
         self._is_speaking = False
+        if self.ten_vad:
+            self.ten_vad.reset()
 
     @property
     def is_speaking(self) -> bool:

@@ -71,13 +71,31 @@ class LocalAgreementConfig:
 
 
 @dataclass
+class TenVADConfig:
+    """TenVAD settings."""
+    
+    hop_size: int = 256  # 16 ms per frame (fixed by model)
+    threshold: float = 0.7  # Detection threshold (Higher = More aggressive/Stricter)
+
+
+@dataclass
 class VADConfig:
     """Voice Activity Detection settings."""
 
-    enabled: bool = True  # Set False when using external VAD (Pipecat, LiveKit)
-    silence_threshold: float = 0.01  # RMS threshold
-    silence_duration: float = 0.5  # seconds of silence = end of utterance
-    min_speech_duration: float = 0.3  # minimum speech to process
+    enabled: bool = False  # Set False when using external VAD (Pipecat, LiveKit)
+    type: str = "ten_vad"  # "rms" or "ten_vad"
+    silence_threshold: float = 0.03  # RMS threshold (Higher = Cuts louder noise)
+    silence_duration: float = 2.0  # seconds of silence = end of utterance
+    min_speech_duration: float = 0.1  # minimum speech to process
+    ten_vad: TenVADConfig = field(default_factory=TenVADConfig)
+
+
+@dataclass
+class NoiseRemovalConfig:
+    """Noise removal settings (DeepFilterNet)."""
+    
+    enabled: bool = False
+    attenuation: float = 0.5  # 1.0 = Full removal, 0.0 = No removal (Dry/Wet mix)
 
 
 @dataclass
@@ -95,7 +113,7 @@ class ServerConfig:
     """Server settings."""
 
     host: str = field(default_factory=lambda: env_str("HOST", "0.0.0.0"))
-    port: int = field(default_factory=lambda: env_int("PORT", 8000))
+    port: int = field(default_factory=lambda: env_int("PORT", 8080))
     cors_origins: list[str] | None = None
     # Concurrent session limits
     max_concurrent_requests: int = field(default_factory=lambda: env_int("MAX_CONCURRENT_REQUESTS", 100))
@@ -107,7 +125,8 @@ class StreamingEnvConfig:
     """Streaming settings from environment."""
 
     chunk_duration: float = field(default_factory=lambda: env_float("CHUNK_DURATION", 5.0))
-    vad_enabled: bool = field(default_factory=lambda: env_bool("VAD_ENABLED", True))
+    vad_enabled: bool = field(default_factory=lambda: env_bool("VAD_ENABLED", False))
+    noise_removal_enabled: bool = field(default_factory=lambda: env_bool("NOISE_REMOVAL_ENABLED", False))
 
 
 @dataclass
@@ -118,6 +137,7 @@ class Config:
     streaming: StreamingConfig
     local_agreement: LocalAgreementConfig
     vad: VADConfig
+    noise_removal: NoiseRemovalConfig
     model: ModelConfig
     server: ServerConfig
 
@@ -131,12 +151,16 @@ class Config:
 
         vad = VADConfig()
         vad.enabled = env_config.vad_enabled
+        
+        noise_removal = NoiseRemovalConfig()
+        noise_removal.enabled = env_config.noise_removal_enabled
 
         return cls(
             audio=AudioConfig(),
             streaming=streaming,
             local_agreement=LocalAgreementConfig(),
-            vad=vad,
+            vad=VADConfig(ten_vad=TenVADConfig()),
+            noise_removal=noise_removal,
             model=ModelConfig(),
             server=ServerConfig(),
         )
