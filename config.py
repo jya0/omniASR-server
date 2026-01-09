@@ -59,7 +59,8 @@ class StreamingConfig:
     chunk_duration: float = 5.0  # seconds per processing chunk
     overlap_ratio: float = 0.5  # overlap between chunks (0.5 = 50%)
     min_chunk_duration: float = 0.3  # minimum audio to process
-    max_buffer_duration: float = 30.0  # max buffer before forced flush
+    max_buffer_duration: float = 8.0  # max buffer before forced flush
+    soft_reset_threshold: float = 0.6  # trigger early commit at 80% of max_buffer
 
 
 @dataclass
@@ -84,9 +85,9 @@ class VADConfig:
 
     enabled: bool = False  # Set False when using external VAD (Pipecat, LiveKit)
     type: str = "ten_vad"  # "rms" or "ten_vad"
-    silence_threshold: float = 0.05  # RMS threshold
+    silence_threshold: float = 0.2  # RMS threshold
     silence_duration: float = 0.5  # Keep only 0.5s of silence after speech
-    min_speech_duration: float = 0.1  # minimum speech to process
+    min_speech_duration: float = 0.2  # minimum speech to process
     ten_vad: TenVADConfig = field(default_factory=TenVADConfig)
 
 
@@ -95,7 +96,29 @@ class NoiseRemovalConfig:
     """Noise removal settings (DeepFilterNet)."""
     
     enabled: bool = False
-    attenuation: float = 0.5  # 1.0 = Full removal, 0.0 = No removal (Dry/Wet mix)
+    attenuation: float = 0.4  # 1.0 = Full removal, 0.0 = No removal (Dry/Wet mix)
+
+
+@dataclass
+class HallucinationConfig:
+    """Hallucination detection settings."""
+    
+    # Energy Gating: Skip transcription if audio energy is too low
+    energy_gating_enabled: bool = True
+    min_rms_threshold: float = 0.01  # Minimum RMS to transcribe
+    
+    # Consistency Check: Verify by transcribing halves and comparing
+    consistency_check_enabled: bool = False
+    consistency_threshold: float = 0.6  # Fuzzy match ratio (0-1)
+    
+    # N-gram Repetition: Detect abnormal word repetition patterns
+    ngram_detection_enabled: bool = True
+    max_word_repeat: int = 3  # Max consecutive same-word repeats
+    max_same_word_ratio: float = 0.4  # Max ratio of same word in output
+    
+    # Speaking Rate: Fastest human speech is ~9 words/second (auctioneers, rappers)
+    max_words_per_second: float = 9.0  # Anything faster is physically impossible
+
 
 
 @dataclass
@@ -155,6 +178,7 @@ class Config:
     compressor: CompressorConfig
     noise_removal: NoiseRemovalConfig
     noise_gate: NoiseGateConfig
+    hallucination: HallucinationConfig
     model: ModelConfig
     server: ServerConfig
 
@@ -180,6 +204,7 @@ class Config:
             compressor=CompressorConfig(),
             noise_removal=noise_removal,
             noise_gate=NoiseGateConfig(),
+            hallucination=HallucinationConfig(),
             model=ModelConfig(),
             server=ServerConfig(),
         )

@@ -34,82 +34,177 @@ import base64
 # Global DF model instance (singleton)
 _DF_MODEL = None
 
-class OutputFilter:
-    """Filters hallucinations and nonsensical output."""
+class HallucinationDetector:
+    """
+    Robust hallucination detection using multiple techniques:
+    1. Energy Gating: Skip low-energy audio before transcription
+    2. Consistency Check: Compare full transcription vs halves
+    3. N-gram Detection: Detect abnormal word repetition patterns
+    """
     
     BLOCKLIST = [
-        # "Amara.org",
-        # "Subtitles by",
-        # "Translated by",
-        # "Copyright",
-        # "All rights reserved",
-        # "Paradox Interactive",
-        # "Mojang AB",
-        # "Step Id:",
-        # "Master Scribes",
-        # "Nomad Scribes",
-        # "Miraculous Ladybug",
-        # "The following content has been modified",
-        # "monsieur lucky",
-        # "marie mathew",
-        # "thiệt hơn chị bản",
-        # "dem crite",
-        # "électrique",
+        "noise",
+        "Amara.org",
+        "Subtitles by",
+        "Translated by",
+        "Copyright",
     ]
-
-    @staticmethod
-    def is_valid_text(text: str) -> bool:
+    
+    def __init__(self, model=None):
         """
-        Check if text is valid English or Arabic.
-        Discard if it contains too many characters from other scripts (e.g. Vietnamese, French specific).
-        Also discard blocklisted phrases.
+        Args:
+            model: ASRModel instance for consistency check (optional)
+        """
+        self._model = model
+    
+    @staticmethod
+    def get_rms(audio: np.ndarray) -> float:
+        """Calculate RMS energy of audio."""
+        if len(audio) == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
+    
+    def energy_gate(self, audio: np.ndarray) -> bool:
+        """
+        Check if audio has enough energy to be speech.
+        
+        Returns:
+            True if audio should be transcribed, False if too quiet
+        """
+        if not config.hallucination.energy_gating_enabled:
+            return True
+            
+        rms = self.get_rms(audio)
+        return rms >= config.hallucination.min_rms_threshold
+    
+    def consistency_check(self, audio: np.ndarray, full_text: str) -> bool:
+        """
+        Verify transcription by comparing full vs two halves.
+        Real speech produces consistent results; hallucinations vary wildly.
+        
+        Returns:
+            True if transcription is consistent (likely real), False if inconsistent
+        """
+        if not config.hallucination.consistency_check_enabled:
+            return True
+            
+        if self._model is None:
+            return True  # Can't check without model
+            
+        if len(audio) < 3200:  # Too short to split (< 0.2s at 16kHz)
+            return True
+            
+        # Split audio in half
+        mid = len(audio) // 2
+        first_half = audio[:mid]
+        second_half = audio[mid:]
+        
+        # Transcribe halves
+        try:
+            result_first = self._model.transcribe_audio(first_half)
+            result_second = self._model.transcribe_audio(second_half)
+            
+            combined_text = f"{result_first.text} {result_second.text}".strip()
+            
+            # Compare using fuzzy matching
+            from difflib import SequenceMatcher
+            ratio = SequenceMatcher(None, full_text.lower(), combined_text.lower()).ratio()
+            
+            return ratio >= config.hallucination.consistency_threshold
+            
+        except Exception:
+            return True  # On error, assume valid
+    
+    def ngram_check(self, text: str, audio_duration: float = None) -> bool:
+        """
+        Detect abnormal word patterns:
+        1. Repetition (same word 4+ times)
+        2. Speaking rate (>9 words/second is impossible)
+        
+        Args:
+            text: Transcription text
+            audio_duration: Duration of audio in seconds (for speaking rate check)
+        
+        Returns:
+            True if text looks normal, False if suspicious pattern detected
+        """
+        if not config.hallucination.ngram_detection_enabled:
+            return True
+            
+        if not text or len(text.strip()) < 3:
+            return False  # Too short is suspicious
+            
+        words = text.lower().split()
+        if len(words) < 2:
+            return True  # Too few words to check
+        
+        # Speaking rate check: Max ~9 words/second (fastest human speech)
+        if audio_duration and audio_duration > 0.1:
+            words_per_second = len(words) / audio_duration
+            if words_per_second > config.hallucination.max_words_per_second:
+                return False  # Impossible speaking rate
+            
+        # Check consecutive repetition
+        repeat_count = 1
+        max_repeat = config.hallucination.max_word_repeat
+        
+        for i in range(1, len(words)):
+            if words[i] == words[i-1]:
+                repeat_count += 1
+                if repeat_count > max_repeat:
+                    return False
+            else:
+                repeat_count = 1
+        
+        # Check overall same-word ratio
+        if len(words) >= 4:
+            from collections import Counter
+            word_counts = Counter(words)
+            _, top_count = word_counts.most_common(1)[0]
+            ratio = top_count / len(words)
+            
+            if ratio > config.hallucination.max_same_word_ratio and top_count >= 3:
+                return False
+        
+        return True
+    
+    def is_valid_text(self, text: str, audio_duration: float = None) -> bool:
+        """
+        Combined validation: blocklist + n-gram check + speaking rate.
+        (Energy gating and consistency check are done separately on audio)
+        
+        Args:
+            text: Transcription text
+            audio_duration: Audio duration in seconds (for speaking rate check)
         """
         if not text:
             return True
-
-        # 1. Blocklist check
+            
+        text = text.strip()
+        
+        # Blocklist check
         lower_text = text.lower()
-        for phrase in OutputFilter.BLOCKLIST:
+        for phrase in self.BLOCKLIST:
             if phrase.lower() in lower_text:
                 return False
-
-        # 2. Character Ratio Check
-        # Allowed: Arabic, English (Latin), Numbers, Punctuation, Common Symbols
-        # Regex for valid characters:
-        # \u0600-\u06FF (Arabic)
-        # a-zA-Z (English)
-        # 0-9 (Numbers)
-        # \s (Whitespace)
-        # .,?!'":;-() (Punctuation)
         
-        # We count valid chars and total chars
-        # Note: "Monsieur" (French) is mostly Latin, so it passes this check. Blocklist handles it.
-        # "thiet hon chi ban" (Vietnamese) involves latin chars with tone marks.
-        # Simple latin range a-zA-Z won't catch accented chars like 'ệ', 'ị', 'ả'. 
-        # So if we strictly allow only a-zA-Z, we filter out Vietnamese/French accents.
+        # N-gram repetition + speaking rate check
+        if not self.ngram_check(text, audio_duration):
+            return False
         
+        # Character ratio check (Arabic/English)
         valid_pattern = re.compile(r'[\u0600-\u06FFa-zA-Z0-9\s.,?!\'"\-:;()]')
-        
         valid_chars = len(valid_pattern.findall(text))
         total_chars = len(text)
         
-        if total_chars == 0:
-            return True
-            
-        ratio = valid_chars / total_chars
-        
-        # If less than 80% of characters are valid (Arabic/English/Common), we discard.
-        # This effectively filters out CJK, Cyrillic, and extended Latin (Vietnamese tones, French accents).
-        if ratio < 0.8:
-            return False
-            
-        # 3. Repetition Check
-        # Catch "oooooooooo" type hallucinations (common with whisper on silence/music)
-        # Any character repeated 10 times or more
-        if re.search(r'(.)\1{9,}', text):
+        if total_chars > 0 and (valid_chars / total_chars) < 0.8:
             return False
             
         return True
+
+
+# Backward compatibility alias
+OutputFilter = HallucinationDetector
 
 def get_df_model():
     """Get or initialize the DeepFilterNet model globally."""
@@ -169,6 +264,9 @@ class StreamingTranscriber:
     
     # DeepFilterNet state
     df_state: object = None
+    
+    # Hallucination detector
+    hallucination_detector: HallucinationDetector = None
 
     # Callbacks
     on_result: Callable[[StreamingResult], None] = None
@@ -191,9 +289,10 @@ class StreamingTranscriber:
             self.agreement = LocalAgreement()
         if self.processor is None:
             self.processor = AudioProcessor()
-            
-        # Initialize DeepFilterNet state handling
-        pass
+        
+        # Initialize hallucination detector with model reference
+        if self.hallucination_detector is None:
+            self.hallucination_detector = HallucinationDetector(model=self.model)
 
     def start(self) -> None:
         """Start a new streaming session."""
@@ -314,9 +413,14 @@ class StreamingTranscriber:
              should_infer = True
              
         # Force inference if buffer is getting too full (safety)
-        if self.buffer.duration > config.streaming.max_buffer_duration:
-             should_infer = True
-             speech_ended = True # Force end of utterance
+        # EARLY COMMITMENT: When buffer approaches capacity, commit current text
+        # and reset to bound latency while preserving all transcribed text
+        soft_limit = config.streaming.max_buffer_duration * config.streaming.soft_reset_threshold
+        
+        if self.buffer.duration >= soft_limit:
+            should_infer = True
+            # Force early commitment - treat as end of turn
+            speech_ended = True
              
         if should_infer:
             chunk = self.buffer.get_current_window()
@@ -348,15 +452,33 @@ class StreamingTranscriber:
         return results
 
     def _process_chunk(self, chunk: AudioChunk) -> StreamingResult | None:
-        """Process a single audio chunk."""
-        # Transcribe
+        """Process a single audio chunk with hallucination detection."""
+        
+        # 1. Energy Gating: Skip if audio is too quiet
+        if not self.hallucination_detector.energy_gate(chunk.audio):
+            # Return empty result (silence)
+            return StreamingResult(
+                text="",
+                confirmed_text=self.agreement._confirmed,
+                pending_text="",
+                is_final=chunk.is_final,
+                latency_ms=0,
+                audio_duration=chunk.end_time,
+            )
+        
+        # 2. Transcribe
         transcribe_result = self.model.transcribe_audio(chunk.audio)
-
-        # --- Output Filtering ---
-        if not OutputFilter.is_valid_text(transcribe_result.text):
-            # Treat as silence / ignore
-            transcribe_result.text = "" 
-        # ------------------------
+        
+        # 3. N-gram, blocklist, and speaking rate check
+        audio_duration = chunk.end_time - chunk.start_time
+        if not self.hallucination_detector.is_valid_text(transcribe_result.text, audio_duration):
+            transcribe_result.text = ""
+        
+        # 4. Consistency Check (for non-empty, non-final results)
+        if transcribe_result.text and not chunk.is_final:
+            if not self.hallucination_detector.consistency_check(chunk.audio, transcribe_result.text):
+                # Inconsistent = likely hallucination
+                transcribe_result.text = ""
 
         self._total_audio_duration = chunk.end_time
 
