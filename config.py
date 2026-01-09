@@ -95,7 +95,7 @@ class NoiseRemovalConfig:
     """Noise removal settings (DeepFilterNet)."""
     
     enabled: bool = False
-    attenuation: float = 0.5  # 1.0 = Full removal, 0.0 = No removal (Dry/Wet mix)
+    attenuation: float = 0.4  # 1.0 = Full removal, 0.0 = No removal (Dry/Wet mix)
 
 
 @dataclass
