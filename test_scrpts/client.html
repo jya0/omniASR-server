@@ -87,6 +87,115 @@
 
     <div id="transcript"></div>
 
+    <style>
+        .config-panel {
+            margin: 1rem 0;
+            padding: 1rem;
+            background: #f0f0f0;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+        }
+
+        .config-group {
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .config-group:last-child {
+            border-bottom: none;
+        }
+
+        .config-row {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .config-row label {
+            font-weight: 500;
+        }
+
+        input[type="number"] {
+            width: 80px;
+            padding: 4px;
+        }
+
+        textarea.json-preview {
+            width: 100%;
+            font-family: monospace;
+            font-size: 0.9rem;
+            background: #2d2d2d;
+            color: #eee;
+            padding: 0.5rem;
+            border-radius: 4px;
+            margin-top: 0.5rem;
+            height: 150px;
+        }
+
+        summary {
+            cursor: pointer;
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+        }
+    </style>
+
+    <details class="config-panel" open>
+        <summary>Advanced Configuration</summary>
+
+        <div class="config-group">
+            <div class="config-row">
+                <label><input type="checkbox" id="cfg_vad_enabled"> Enable VAD</label>
+            </div>
+            <div class="config-row">
+                <label>Silence Duration (s): <input type="number" id="cfg_vad_silence" value="0.5" step="0.1"
+                        min="0"></label>
+            </div>
+        </div>
+
+        <div class="config-group">
+            <div class="config-row">
+                <label><input type="checkbox" id="cfg_nr_enabled"> Enable Noise Removal (DeepFilterNet)</label>
+            </div>
+            <div class="config-row">
+                <label>Attenuation (0.0-1.0): <input type="number" id="cfg_nr_att" value="0.4" step="0.1" min="0"
+                        max="1"></label>
+            </div>
+        </div>
+
+        <div class="config-group">
+            <div class="config-row">
+                <label><input type="checkbox" id="cfg_comp_enabled" checked> Enable Compressor</label>
+                <label>Thresh (dB): <input type="number" id="cfg_comp_thresh" value="-20.0" step="1"></label>
+                <label>Ratio: <input type="number" id="cfg_comp_ratio" value="4.0" step="0.1"></label>
+            </div>
+        </div>
+
+        <div class="config-group">
+            <div class="config-row">
+                <label><input type="checkbox" id="cfg_gate_enabled" checked> Enable Noise Gate</label>
+                <label>Thresh (dB): <input type="number" id="cfg_gate_thresh" value="-40.0" step="1"></label>
+            </div>
+        </div>
+
+        <div class="config-group">
+            <div class="config-row">
+                <label><input type="checkbox" id="cfg_hallc_energy" checked> Energy Gating</label>
+                <label><input type="checkbox" id="cfg_hallc_ngram" checked> N-gram Detection</label>
+            </div>
+            <div class="config-row">
+                <label>Max Buffer Duration (s): <input type="number" id="cfg_buffer_dur" value="8.0" step="0.5"></label>
+            </div>
+        </div>
+
+        <div class="config-group">
+            <label>Generated Request Body (Config JSON):</label>
+            <textarea id="cfg_json_preview" class="json-preview" readonly></textarea>
+        </div>
+    </details>
+
     <script>
         const SAMPLE_RATE = 16000;
         let ws = null;
@@ -99,6 +208,50 @@
         const btnStop = document.getElementById('btnStop');
         const statusDiv = document.getElementById('status');
         const transcriptDiv = document.getElementById('transcript');
+
+        // Config elements
+        const inputs = [
+            'cfg_vad_enabled', 'cfg_vad_silence',
+            'cfg_nr_enabled', 'cfg_nr_att',
+            'cfg_comp_enabled', 'cfg_comp_thresh', 'cfg_comp_ratio',
+            'cfg_gate_enabled', 'cfg_gate_thresh',
+            'cfg_hallc_energy', 'cfg_hallc_ngram',
+            'cfg_buffer_dur'
+        ].map(id => document.getElementById(id));
+
+        const jsonPreview = document.getElementById('cfg_json_preview');
+
+        function getConfigObj() {
+            return {
+                type: "config",
+                sample_rate: SAMPLE_RATE,
+                vad_enabled: document.getElementById('cfg_vad_enabled').checked,
+                vad_silence_duration: parseFloat(document.getElementById('cfg_vad_silence').value),
+                noise_removal_enabled: document.getElementById('cfg_nr_enabled').checked,
+                noise_removal_attenuation: parseFloat(document.getElementById('cfg_nr_att').value),
+                compressor_enabled: document.getElementById('cfg_comp_enabled').checked,
+                compressor_threshold_db: parseFloat(document.getElementById('cfg_comp_thresh').value),
+                compressor_ratio: parseFloat(document.getElementById('cfg_comp_ratio').value),
+                noise_gate_enabled: document.getElementById('cfg_gate_enabled').checked,
+                noise_gate_threshold_db: parseFloat(document.getElementById('cfg_gate_thresh').value),
+                hallucination_energy_gating: document.getElementById('cfg_hallc_energy').checked,
+                hallucination_ngram_enabled: document.getElementById('cfg_hallc_ngram').checked,
+                max_buffer_duration: parseFloat(document.getElementById('cfg_buffer_dur').value),
+            };
+        }
+
+        function updatePreview() {
+            jsonPreview.value = JSON.stringify(getConfigObj(), null, 2);
+        }
+
+        // Attach listeners
+        inputs.forEach(el => {
+            el.addEventListener('change', updatePreview);
+            el.addEventListener('input', updatePreview);
+        });
+
+        // Initial update
+        updatePreview();
 
         let finalTranscript = "";
 
@@ -223,10 +376,9 @@
                 };
 
                 // Send config to server
-                ws.send(JSON.stringify({
-                    type: "config",
-                    sample_rate: SAMPLE_RATE
-                }));
+                const configMsg = getConfigObj();
+                console.log("Sending config:", configMsg);
+                ws.send(JSON.stringify(configMsg));
 
                 setStatus("Recording...", "recording");
                 btnStart.disabled = true;

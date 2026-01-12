@@ -87,6 +87,7 @@ from schemas import (
     VerboseTranscriptionResponse,
     StreamingMessage,
     HealthResponse,
+    WebSocketConfig,
 )
 
 
@@ -117,8 +118,14 @@ app = FastAPI(
 )
 
 from fastapi.staticfiles import StaticFiles
+
+# Create debug_audio directory - fallback to /tmp if permission denied
 debug_dir = Path(__file__).parent / "debug_audio"
-debug_dir.mkdir(exist_ok=True)
+try:
+    debug_dir.mkdir(exist_ok=True)
+except PermissionError:
+    debug_dir = Path("/tmp/debug_audio")
+    debug_dir.mkdir(exist_ok=True)
 app.mount("/debug_audio", StaticFiles(directory=str(debug_dir)), name="debug_audio")
 
 # CORS middleware
@@ -359,7 +366,18 @@ async def websocket_transcription(websocket: WebSocket):
                     data = json.loads(message["text"])
 
                     if data.get("type") == "config":
-                        sample_rate = data.get("sample_rate", sample_rate)
+                        try:
+                            # Parse full config message
+                            config_msg = WebSocketConfig(**data)
+                            sample_rate = config_msg.sample_rate
+                            
+                            # Apply config overrides
+                            # exclude_none=True ensures we only override what was sent
+                            transcriber.apply_config(config_msg.model_dump(exclude_none=True))
+                        except Exception as e:
+                            print(f"Error parsing config: {e}")
+                            # Don't break connection, just ignore bad config
+                        
                         continue
 
                     if data.get("type") == "end":

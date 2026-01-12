@@ -57,6 +57,32 @@ class WebSocketConfig(BaseModel):
     language: Optional[str] = None
     model: str = "omniASR_CTC_300M_v2"
 
+    # VAD Settings
+    vad_enabled: Optional[bool] = None
+    vad_silence_duration: Optional[float] = None
+    
+    # Noise Removal (DeepFilterNet)
+    noise_removal_enabled: Optional[bool] = None
+    noise_removal_attenuation: Optional[float] = None
+    
+    # Compressor
+    compressor_enabled: Optional[bool] = None
+    compressor_threshold_db: Optional[float] = None
+    compressor_ratio: Optional[float] = None
+    
+    # Noise Gate
+    noise_gate_enabled: Optional[bool] = None
+    noise_gate_threshold_db: Optional[float] = None
+    
+    # Hallucination Detection
+    hallucination_energy_gating: Optional[bool] = None
+    hallucination_min_rms: Optional[float] = None
+    hallucination_ngram_enabled: Optional[bool] = None
+    hallucination_max_word_repeat: Optional[int] = None
+    
+    # Streaming
+    max_buffer_duration: Optional[float] = None
+
 
 class HealthResponse(BaseModel):
     """Health check response."""

@@ -271,6 +271,13 @@ class StreamingTranscriber:
     # Callbacks
     on_result: Callable[[StreamingResult], None] = None
 
+    # Instance Config (Defaults from global config)
+    vad_enabled: bool = field(default_factory=lambda: config.vad.enabled)
+    noise_removal_enabled: bool = field(default_factory=lambda: config.noise_removal.enabled)
+    max_buffer_duration: float = field(default_factory=lambda: config.streaming.max_buffer_duration)
+    
+    _noise_removal_attenuation: float = field(default_factory=lambda: config.noise_removal.attenuation)
+
     # State
     _started: bool = False
     _total_audio_duration: float = 0
@@ -334,7 +341,7 @@ class StreamingTranscriber:
         audio = self.processor.process_compressor(audio)
             
         # --- 2. DeepFilterNet Noise Removal ---
-        if self.df_state is not None:
+        if self.df_state is not None and self.noise_removal_enabled:
              model = get_df_model()
              device = config.model.device or ("cuda" if torch.cuda.is_available() else "cpu")
              
@@ -364,7 +371,7 @@ class StreamingTranscriber:
              audio_out_numpy = enhanced_audio_tensor.squeeze(0).cpu().detach().numpy()
              
              # Dry/Wet Mix (Tone down)
-             att = config.noise_removal.attenuation
+             att = self._noise_removal_attenuation
              if att < 1.0:
                  min_len = min(len(audio), len(audio_out_numpy))
                  audio_out_numpy = audio_out_numpy[:min_len] * att + audio[:min_len] * (1 - att)
@@ -382,7 +389,7 @@ class StreamingTranscriber:
         chunks_to_process = []
         speech_ended = False
         
-        if config.vad.enabled:
+        if self.vad_enabled:
             # New VAD logic returns chunks and end-flag
             chunks_to_process, speech_ended = self.vad.process(audio)
         else:
@@ -415,7 +422,8 @@ class StreamingTranscriber:
         # Force inference if buffer is getting too full (safety)
         # EARLY COMMITMENT: When buffer approaches capacity, commit current text
         # and reset to bound latency while preserving all transcribed text
-        soft_limit = config.streaming.max_buffer_duration * config.streaming.soft_reset_threshold
+        # Use instance config for max_buffer_duration
+        soft_limit = self.max_buffer_duration * config.streaming.soft_reset_threshold
         
         if self.buffer.duration >= soft_limit:
             should_infer = True
@@ -591,6 +599,60 @@ class StreamingTranscriber:
                  
         return result
 
+    def apply_config(self, session_config: dict) -> None:
+        """
+        Apply session-specific config overrides.
+        Note: This modifies the instance state for this session only.
+        """
+        if not session_config:
+            return
+            
+        # VAD Settings
+        if "vad_enabled" in session_config:
+            # Re-initialize VAD if enabled changes or we need to update params
+            # Note: For now we just update top level properties where possible
+            pass # VAD class structure makes this tricky, mostly handled by process() checks?
+            # Actually, config.vad.enabled is checked in process(). 
+            # We need to store session overrides.
+            # Best approach: Update internal component properties directly
+            
+        # 1. Update VAD
+        if self.vad:
+             if "vad_silence_duration" in session_config:
+                 self.vad.silence_duration = session_config["vad_silence_duration"]
+             # vad_enabled is checked in self.process via config global. 
+             # We should change self.process to use an instance variable.
+             
+        # 2. Update Noise Removal
+        if "noise_removal_attenuation" in session_config:
+            # We need to store this for use in process()
+            self._noise_removal_attenuation = session_config["noise_removal_attenuation"]
+            
+        # 3. Update Audio Processor (Compressor / Noise Gate)
+        if self.processor:
+            if "compressor_enabled" in session_config:
+                 self.processor.compressor_enabled = session_config["compressor_enabled"]
+            if "compressor_threshold_db" in session_config:
+                 self.processor.compressor_threshold = session_config["compressor_threshold_db"]
+            if "compressor_ratio" in session_config:
+                 self.processor.compressor_ratio = session_config["compressor_ratio"]
+                 
+            if "noise_gate_enabled" in session_config:
+                 self.processor.noise_gate_enabled = session_config["noise_gate_enabled"]
+            if "noise_gate_threshold_db" in session_config:
+                 self.processor.noise_gate_threshold = session_config["noise_gate_threshold_db"]
+
+        # 4. Hallucination
+        if "hallucination_energy_gating" in session_config:
+            # Update config global? NO. 
+            # We need to update the detector's internal flags if possible, or pass overrides.
+            # The HallucinationDetector reads from config.hallucination.
+            # We should probably modify HallucinationDetector to allow status overrides.
+            pass
+            
+        # Store for use in process()
+        self._session_config = session_config
+
     def reset(self) -> None:
         """Reset transcriber state."""
         self.buffer.clear()
@@ -615,6 +677,10 @@ class AsyncStreamingTranscriber:
     def __init__(self):
         self.transcriber = StreamingTranscriber()
         self._queue: asyncio.Queue[StreamingResult] = asyncio.Queue()
+
+    def apply_config(self, session_config: dict) -> None:
+        """Apply session-specific config overrides."""
+        self.transcriber.apply_config(session_config)
 
     async def start(self) -> None:
         """Start streaming session."""

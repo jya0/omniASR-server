@@ -11,10 +11,10 @@ class AudioProcessor:
     def __init__(self, sample_rate: int = 16000):
         self.sample_rate = sample_rate
         
+        self.compressor_enabled = config.compressor.enabled
+        self.noise_gate_enabled = config.noise_gate.enabled
+        
         # Initialize Compressor
-        # We initialize with current config. 
-        # Note: If config changes at runtime, we might need a method to update these.
-        # For now assuming static config per session.
         self.compressor = Compressor(
             threshold_db=config.compressor.threshold_db,
             ratio=config.compressor.ratio,
@@ -32,16 +32,38 @@ class AudioProcessor:
 
     def process_compressor(self, audio: np.ndarray) -> np.ndarray:
         """Apply dynamic range compression."""
-        if not config.compressor.enabled:
+        if not self.compressor_enabled:
             return audio
             
-        # Pedalboard process returns the processed audio
-        # It handles state internally
         return self.compressor.process(audio, sample_rate=self.sample_rate)
 
     def process_noise_gate(self, audio: np.ndarray) -> np.ndarray:
         """Apply noise gating."""
-        if not config.noise_gate.enabled:
+        if not self.noise_gate_enabled:
             return audio
             
         return self.noise_gate.process(audio, sample_rate=self.sample_rate)
+        
+    @property
+    def compressor_threshold(self):
+        return self.compressor.threshold_db
+        
+    @compressor_threshold.setter
+    def compressor_threshold(self, value):
+        self.compressor.threshold_db = value
+        
+    @property
+    def compressor_ratio(self):
+        return self.compressor.ratio
+        
+    @compressor_ratio.setter
+    def compressor_ratio(self, value):
+        self.compressor.ratio = value
+        
+    @property
+    def noise_gate_threshold(self):
+        return self.noise_gate.threshold_db
+        
+    @noise_gate_threshold.setter
+    def noise_gate_threshold(self, value):
+        self.noise_gate.threshold_db = value

@@ -73,13 +73,34 @@
             cursor: not-allowed;
         }
 
+        .config-section {
+            margin-bottom: 1rem;
+            padding: 1rem;
+            background: #f5f5f5;
+            border-radius: 4px;
+        }
+
+        .config-section label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: bold;
+        }
+
+        .config-section input {
+            width: 100%;
+            padding: 0.5rem;
+            font-size: 1rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
         #ssl-fix-container {
             display: none;
             margin-top: 1rem;
             padding: 1rem;
             border: 1px solid #cce5ff;
             background-color: #e6f2ff;
-            /* Light blue info background */
             border-radius: 4px;
         }
 
@@ -101,10 +122,13 @@
     <h1>omniASR Streaming Client</h1>
     <div id="status" class="status-disconnected">Status: Disconnected</div>
 
-    <div style="margin-bottom: 1rem;">
-        <label for="apiKey">API Key:</label>
-        <input type="text" id="apiKey" value="sk-xXh95-J0QJwS-ZOLh3j8WGIxIbBxva6YiYIhJebJm_g"
-            style="width: 300px; padding: 0.25rem;">
+    <div class="config-section">
+        <label for="wssUrl">WebSocket URL:</label>
+        <input type="text" id="wssUrl"
+            value="wss://inference.adeoaiengine.ecouncil.ae/models/fa19c2e6-a7c9-43b6-847b-28f7717c6756/ws/v1/audio/transcriptions">
+
+        <label for="apiKey" style="margin-top: 0.5rem;">API Key:</label>
+        <input type="text" id="apiKey" value="sk-IBQGzF3W1Qj-Jj-V0TFVcwpHG95YbA9mfEuJCwK_W44">
     </div>
 
     <div>
@@ -119,6 +143,115 @@
             "Advanced" -> "Proceed") and then come back here and try connecting again.</p>
         <button id="btnFixSSL">Fix SSL / Accept Certificate</button>
     </div>
+
+    <style>
+        .adv-config-panel {
+            margin: 1rem 0;
+            padding: 1rem;
+            background: #f0f0f0;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+        }
+
+        .config-group {
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .config-group:last-child {
+            border-bottom: none;
+        }
+
+        .config-row {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .config-row label {
+            font-weight: 500;
+        }
+
+        input[type="number"] {
+            width: 80px;
+            padding: 4px;
+        }
+
+        textarea.json-preview {
+            width: 100%;
+            font-family: monospace;
+            font-size: 0.9rem;
+            background: #2d2d2d;
+            color: #eee;
+            padding: 0.5rem;
+            border-radius: 4px;
+            margin-top: 0.5rem;
+            height: 150px;
+        }
+
+        summary {
+            cursor: pointer;
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+        }
+    </style>
+
+    <details class="adv-config-panel" open>
+        <summary>Advanced Configuration</summary>
+
+        <div class="config-group">
+            <div class="config-row">
+                <label><input type="checkbox" id="cfg_vad_enabled"> Enable VAD</label>
+            </div>
+            <div class="config-row">
+                <label>Silence Duration (s): <input type="number" id="cfg_vad_silence" value="0.5" step="0.1"
+                        min="0"></label>
+            </div>
+        </div>
+
+        <div class="config-group">
+            <div class="config-row">
+                <label><input type="checkbox" id="cfg_nr_enabled"> Enable Noise Removal (DeepFilterNet)</label>
+            </div>
+            <div class="config-row">
+                <label>Attenuation (0.0-1.0): <input type="number" id="cfg_nr_att" value="0.4" step="0.1" min="0"
+                        max="1"></label>
+            </div>
+        </div>
+
+        <div class="config-group">
+            <div class="config-row">
+                <label><input type="checkbox" id="cfg_comp_enabled" checked> Enable Compressor</label>
+                <label>Thresh (dB): <input type="number" id="cfg_comp_thresh" value="-20.0" step="1"></label>
+                <label>Ratio: <input type="number" id="cfg_comp_ratio" value="4.0" step="0.1"></label>
+            </div>
+        </div>
+
+        <div class="config-group">
+            <div class="config-row">
+                <label><input type="checkbox" id="cfg_gate_enabled" checked> Enable Noise Gate</label>
+                <label>Thresh (dB): <input type="number" id="cfg_gate_thresh" value="-40.0" step="1"></label>
+            </div>
+        </div>
+
+        <div class="config-group">
+            <div class="config-row">
+                <label><input type="checkbox" id="cfg_hallc_energy" checked> Energy Gating</label>
+                <label><input type="checkbox" id="cfg_hallc_ngram" checked> N-gram Detection</label>
+            </div>
+            <div class="config-row">
+                <label>Max Buffer Duration (s): <input type="number" id="cfg_buffer_dur" value="8.0" step="0.5"></label>
+            </div>
+        </div>
+
+        <div class="config-group">
+            <label>Generated Request Body (Config JSON):</label>
+            <textarea id="cfg_json_preview" class="json-preview" readonly></textarea>
+        </div>
+    </details>
 
     <div id="transcript"></div>
 
@@ -137,9 +270,51 @@
         const sslFixContainer = document.getElementById('ssl-fix-container');
         const btnFixSSL = document.getElementById('btnFixSSL');
         const apiKeyInput = document.getElementById('apiKey');
+        const wssUrlInput = document.getElementById('wssUrl');
 
-        // The WSS URL
-        const WSS_BASE_URL = "wss://inference.adeoaiengine.ecouncil.ae/models/5b1c1b58-f0e1-4ed1-aeb1-85ce3be73a14/ws/v1/audio/transcriptions";
+        // Config elements
+        const inputs = [
+            'cfg_vad_enabled', 'cfg_vad_silence',
+            'cfg_nr_enabled', 'cfg_nr_att',
+            'cfg_comp_enabled', 'cfg_comp_thresh', 'cfg_comp_ratio',
+            'cfg_gate_enabled', 'cfg_gate_thresh',
+            'cfg_hallc_energy', 'cfg_hallc_ngram',
+            'cfg_buffer_dur'
+        ].map(id => document.getElementById(id));
+
+        const jsonPreview = document.getElementById('cfg_json_preview');
+
+        function getConfigObj() {
+            return {
+                type: "config",
+                sample_rate: SAMPLE_RATE,
+                vad_enabled: document.getElementById('cfg_vad_enabled').checked,
+                vad_silence_duration: parseFloat(document.getElementById('cfg_vad_silence').value),
+                noise_removal_enabled: document.getElementById('cfg_nr_enabled').checked,
+                noise_removal_attenuation: parseFloat(document.getElementById('cfg_nr_att').value),
+                compressor_enabled: document.getElementById('cfg_comp_enabled').checked,
+                compressor_threshold_db: parseFloat(document.getElementById('cfg_comp_thresh').value),
+                compressor_ratio: parseFloat(document.getElementById('cfg_comp_ratio').value),
+                noise_gate_enabled: document.getElementById('cfg_gate_enabled').checked,
+                noise_gate_threshold_db: parseFloat(document.getElementById('cfg_gate_thresh').value),
+                hallucination_energy_gating: document.getElementById('cfg_hallc_energy').checked,
+                hallucination_ngram_enabled: document.getElementById('cfg_hallc_ngram').checked,
+                max_buffer_duration: parseFloat(document.getElementById('cfg_buffer_dur').value),
+            };
+        }
+
+        function updatePreview() {
+            jsonPreview.value = JSON.stringify(getConfigObj(), null, 2);
+        }
+
+        // Attach listeners
+        inputs.forEach(el => {
+            el.addEventListener('change', updatePreview);
+            el.addEventListener('input', updatePreview);
+        });
+
+        // Initial update
+        updatePreview();
 
         let finalTranscript = "";
 
@@ -165,7 +340,7 @@
         }
 
         btnFixSSL.onclick = () => {
-            const httpsUrl = WSS_BASE_URL.replace("wss://", "https://");
+            const httpsUrl = wssUrlInput.value.trim().replace("wss://", "https://");
             window.open(httpsUrl, '_blank', 'width=800,height=600');
         };
 
@@ -174,7 +349,8 @@
             sslFixContainer.style.display = 'none';
 
             const apiKey = apiKeyInput.value.trim();
-            const wssUrl = `${WSS_BASE_URL}?authorization=${apiKey}`;
+            const baseUrl = wssUrlInput.value.trim();
+            const wssUrl = `${baseUrl}?authorization=${apiKey}`;
 
             ws = new WebSocket(wssUrl);
 
@@ -182,7 +358,6 @@
                 setStatus("Connected", "connected");
                 btnConnect.disabled = true;
                 btnStart.disabled = false;
-                // Ideally hide it if connected, though we already hid it above
                 sslFixContainer.style.display = 'none';
             };
 
@@ -191,7 +366,33 @@
                 if (data.type === "ready") {
                     console.log("Server ready:", data);
                 } else if (data.text !== undefined) {
+                    if (data.is_final) {
+                        console.log("DEBUG: Final Result Received:", data);
+                        if (data.debug_audio_url_vad) {
+                            console.log("DEBUG: Found debug_audio_url_vad:", data.debug_audio_url_vad);
+                        } else {
+                            console.warn("DEBUG: No debug_audio_url_vad in message!");
+                        }
+                    }
                     appendTranscript(data.text, data.confirmed_text, data.pending_text, data.is_final);
+
+                    // Show debug audio if present
+                    if (data.debug_audio_url && data.is_final) {
+                        const audioContainer = document.createElement("div");
+                        audioContainer.innerHTML = `<p><strong>Original+Enhanced Debug Audio:</strong> <a href="${data.debug_audio_url}" target="_blank">Download</a></p>
+                            <audio controls src="${data.debug_audio_url}"></audio>`;
+                        transcriptDiv.appendChild(audioContainer);
+                        transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+                    }
+
+                    // Show VAD debug audio if present
+                    if (data.debug_audio_url_vad && data.is_final) {
+                        const audioContainer = document.createElement("div");
+                        audioContainer.innerHTML = `<p><strong>Post-VAD Debug Audio:</strong> <a href="${data.debug_audio_url_vad}" target="_blank">Download</a></p>
+                            <audio controls src="${data.debug_audio_url_vad}"></audio>`;
+                        transcriptDiv.appendChild(audioContainer);
+                        transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+                    }
                 } else if (data.type === "error") {
                     console.error("Server error:", data);
                     alert("Server Error: " + data.message);
@@ -206,7 +407,6 @@
                 stopRecording();
 
                 // Heuristic: If close happened very quickly or with error, show the SSL fix option
-                // We can't always distinguish SSL error from others in JS, so we suggest it.
                 if (!event.wasClean) {
                     sslFixContainer.style.display = 'block';
                 }
@@ -215,7 +415,6 @@
             ws.onerror = (err) => {
                 console.error("WebSocket error:", err);
                 setStatus("Error (Check Console)", "disconnected");
-                // Show the help container on error
                 sslFixContainer.style.display = 'block';
             };
         };
@@ -233,9 +432,9 @@
                 const source = audioContext.createMediaStreamSource(stream);
 
                 // Create Processor (ScriptProcessorNode is deprecated but widely supported for simple tasks)
-                // Buffer size 4096 gives ~250ms latency at 16k, but we want 100ms. 
-                // 16000 * 0.1 = 1600. Closest power of 2 is 2048 (128ms).
-                processor = audioContext.createScriptProcessor(2048, 1, 1);
+                // Buffer size 4096 gives ~256ms latency at 16k.
+                // Larger buffer helps prevents dropped frames if main thread is busy.
+                processor = audioContext.createScriptProcessor(4096, 1, 1);
 
                 source.connect(processor);
                 processor.connect(audioContext.destination); // Start processing
@@ -258,10 +457,9 @@
                 };
 
                 // Send config to server
-                ws.send(JSON.stringify({
-                    type: "config",
-                    sample_rate: SAMPLE_RATE
-                }));
+                const configMsg = getConfigObj();
+                console.log("Sending config:", configMsg);
+                ws.send(JSON.stringify(configMsg));
 
                 setStatus("Recording...", "recording");
                 btnStart.disabled = true;
@@ -269,7 +467,7 @@
 
             } catch (err) {
                 console.error("Mic error:", err);
-                alert("Could not access microphone: " + err.message);
+                alert("Could not access microphone. Ensure you are allowing access.");
             }
         };
 
@@ -288,8 +486,6 @@
             }
             if (ws && ws.readyState === WebSocket.OPEN && btnStop.disabled === false) {
                 ws.send(JSON.stringify({ type: "end" }));
-                // Force close to ensure fresh session on next connect
-                ws.close();
             }
 
             btnStart.disabled = ws && ws.readyState === WebSocket.OPEN ? false : true;
