@@ -87,6 +87,19 @@
 
     <div id="transcript"></div>
 
+    <div id="debugAudioContainer"
+        style="margin-top: 1rem; padding: 1rem; background: #f9f9f9; border-radius: 8px; border: 1px solid #ddd;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+            <strong>Debug Audio Recordings</strong>
+            <div id="debugPagination" style="display: flex; gap: 0.5rem; align-items: center;">
+                <button id="btnPrevPage" disabled>&lt; Prev</button>
+                <span id="pageInfo">Page 1 / 1</span>
+                <button id="btnNextPage" disabled>Next &gt;</button>
+            </div>
+        </div>
+        <div id="debugAudio"></div>
+    </div>
+
     <style>
         .config-panel {
             margin: 1rem 0;
@@ -116,6 +129,9 @@
 
         .config-row label {
             font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 4px;
         }
 
         input[type="number"] {
@@ -140,6 +156,33 @@
             font-weight: bold;
             margin-bottom: 0.5rem;
         }
+
+        /* Tooltip Styles */
+        .tooltip {
+            position: relative;
+            display: inline-block;
+            cursor: help;
+            color: #007bff;
+            font-weight: bold;
+            margin-left: 2px;
+        }
+
+        .tooltip:hover::after {
+            content: attr(data-text);
+            position: absolute;
+            left: 50%;
+            bottom: 100%;
+            transform: translateX(-50%);
+            background: #333;
+            color: #fff;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            white-space: wrap;
+            width: 200px;
+            z-index: 10;
+            text-align: center;
+        }
     </style>
 
     <details class="config-panel" open>
@@ -147,46 +190,111 @@
 
         <div class="config-group">
             <div class="config-row">
-                <label><input type="checkbox" id="cfg_vad_enabled"> Enable VAD</label>
+                <label>
+                    <input type="checkbox" id="cfg_vad_enabled"> Enable VAD
+                    <span class="tooltip"
+                        data-text="Voice Activity Detection: Filters out silence and non-speech audio to reduce load and hallucinations.">ⓘ</span>
+                </label>
             </div>
             <div class="config-row">
-                <label>Silence Duration (s): <input type="number" id="cfg_vad_silence" value="0.5" step="0.1"
-                        min="0"></label>
-            </div>
-        </div>
-
-        <div class="config-group">
-            <div class="config-row">
-                <label><input type="checkbox" id="cfg_nr_enabled"> Enable Noise Removal (DeepFilterNet)</label>
-            </div>
-            <div class="config-row">
-                <label>Attenuation (0.0-1.0): <input type="number" id="cfg_nr_att" value="0.4" step="0.1" min="0"
-                        max="1"></label>
+                <label>
+                    Silence Duration (s):
+                    <input type="number" id="cfg_vad_silence" value="0.5" step="0.1" min="0">
+                    <span class="tooltip"
+                        data-text="Minimum silence required to consider a speech segment ended.">ⓘ</span>
+                </label>
             </div>
         </div>
 
         <div class="config-group">
             <div class="config-row">
-                <label><input type="checkbox" id="cfg_comp_enabled" checked> Enable Compressor</label>
-                <label>Thresh (dB): <input type="number" id="cfg_comp_thresh" value="-20.0" step="1"></label>
-                <label>Ratio: <input type="number" id="cfg_comp_ratio" value="4.0" step="0.1"></label>
+                <label>
+                    <input type="checkbox" id="cfg_nr_enabled"> Enable Noise Removal
+                    <span class="tooltip" data-text="DeepFilterNet: AI-based background noise suppression.">ⓘ</span>
+                </label>
+            </div>
+            <div class="config-row">
+                <label>
+                    Attenuation (0.0-1.0):
+                    <input type="number" id="cfg_nr_att" value="0.4" step="0.1" min="0" max="1">
+                    <span class="tooltip"
+                        data-text="Strength of noise removal. 1.0 is max, lower allows some ambiance.">ⓘ</span>
+                </label>
             </div>
         </div>
 
         <div class="config-group">
             <div class="config-row">
-                <label><input type="checkbox" id="cfg_gate_enabled" checked> Enable Noise Gate</label>
-                <label>Thresh (dB): <input type="number" id="cfg_gate_thresh" value="-40.0" step="1"></label>
+                <label>
+                    <input type="checkbox" id="cfg_comp_enabled" checked> Enable Compressor
+                    <span class="tooltip"
+                        data-text="Reduces volume of loud sounds and boosts quiet sounds for consistent levels.">ⓘ</span>
+                </label>
+                <label>
+                    Thresh (dB):
+                    <input type="number" id="cfg_comp_thresh" value="-20.0" step="1">
+                    <span class="tooltip" data-text="Level above which compression starts.">ⓘ</span>
+                </label>
+                <label>
+                    Ratio:
+                    <input type="number" id="cfg_comp_ratio" value="4.0" step="0.1">
+                    <span class="tooltip"
+                        data-text="Amount of compression (e.g., 4:1 reduces 4dB input excess to 1dB).">ⓘ</span>
+                </label>
             </div>
         </div>
 
         <div class="config-group">
             <div class="config-row">
-                <label><input type="checkbox" id="cfg_hallc_energy" checked> Energy Gating</label>
-                <label><input type="checkbox" id="cfg_hallc_ngram" checked> N-gram Detection</label>
+                <label>
+                    <input type="checkbox" id="cfg_gate_enabled" checked> Enable Noise Gate
+                    <span class="tooltip"
+                        data-text="Runs BEFORE VAD: Mutes all audio below a certain volume to remove hiss/static. (Audio-level filter)">ⓘ</span>
+                </label>
+                <label>
+                    Thresh (dB):
+                    <input type="number" id="cfg_gate_thresh" value="-40.0" step="1">
+                    <span class="tooltip" data-text="Level below which audio is muted.">ⓘ</span>
+                </label>
+            </div>
+        </div>
+
+        <div class="config-group">
+            <div class="config-row">
+                <label>
+                    <input type="checkbox" id="cfg_hallc_energy" checked> Energy Gating
+                    <span class="tooltip"
+                        data-text="Runs AFTER VAD: Skips model inference on quiet audio chunks to prevent hallucinations. (Controls what gets sent to the model)">ⓘ</span>
+                </label>
+                <label>
+                    <input type="checkbox" id="cfg_hallc_ngram" checked> N-gram Detection
+                    <span class="tooltip"
+                        data-text="Prevents repetitive loops by checking for repeated phrases.">ⓘ</span>
+                </label>
             </div>
             <div class="config-row">
-                <label>Max Buffer Duration (s): <input type="number" id="cfg_buffer_dur" value="8.0" step="0.5"></label>
+                <label>
+                    Max Buffer Duration (s):
+                    <input type="number" id="cfg_buffer_dur" value="8.0" step="0.5">
+                    <span class="tooltip"
+                        data-text="Forces a transcription flush if buffer exceeds this length.">ⓘ</span>
+                </label>
+            </div>
+        </div>
+
+        <div class="config-group">
+            <div class="config-row">
+                <label>
+                    <input type="checkbox" id="cfg_debug_enabled" checked> Enable Debug Audio
+                    <span class="tooltip"
+                        data-text="Return debug audio recordings for playback. Disable to reduce bandwidth.">ⓘ</span>
+                </label>
+                <label>
+                    Flush Interval (s):
+                    <input type="number" id="cfg_debug_interval" value="10.0" step="1" min="1">
+                    <span class="tooltip"
+                        data-text="How often to return debug audio chunks (prevents memory buildup).">ⓘ</span>
+                </label>
             </div>
         </div>
 
@@ -208,6 +316,15 @@
         const btnStop = document.getElementById('btnStop');
         const statusDiv = document.getElementById('status');
         const transcriptDiv = document.getElementById('transcript');
+        const debugAudioDiv = document.getElementById('debugAudio');
+
+        // Pagination state for debug audio
+        const btnPrevPage = document.getElementById('btnPrevPage');
+        const btnNextPage = document.getElementById('btnNextPage');
+        const pageInfoSpan = document.getElementById('pageInfo');
+        let debugAudioItems = []; // Array of {fullUrl, vadUrl} objects
+        let currentPage = 0;
+        const ITEMS_PER_PAGE = 3;
 
         // Config elements
         const inputs = [
@@ -216,7 +333,8 @@
             'cfg_comp_enabled', 'cfg_comp_thresh', 'cfg_comp_ratio',
             'cfg_gate_enabled', 'cfg_gate_thresh',
             'cfg_hallc_energy', 'cfg_hallc_ngram',
-            'cfg_buffer_dur'
+            'cfg_buffer_dur',
+            'cfg_debug_enabled', 'cfg_debug_interval'
         ].map(id => document.getElementById(id));
 
         const jsonPreview = document.getElementById('cfg_json_preview');
@@ -237,6 +355,8 @@
                 hallucination_energy_gating: document.getElementById('cfg_hallc_energy').checked,
                 hallucination_ngram_enabled: document.getElementById('cfg_hallc_ngram').checked,
                 max_buffer_duration: parseFloat(document.getElementById('cfg_buffer_dur').value),
+                debug_audio_enabled: document.getElementById('cfg_debug_enabled').checked,
+                debug_audio_interval: parseFloat(document.getElementById('cfg_debug_interval').value),
             };
         }
 
@@ -276,6 +396,51 @@
             transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
         }
 
+        function renderDebugAudioPage() {
+            debugAudioDiv.innerHTML = '';
+            const totalPages = Math.max(1, Math.ceil(debugAudioItems.length / ITEMS_PER_PAGE));
+            const start = currentPage * ITEMS_PER_PAGE;
+            const end = Math.min(start + ITEMS_PER_PAGE, debugAudioItems.length);
+
+            for (let i = start; i < end; i++) {
+                const item = debugAudioItems[i];
+                const container = document.createElement('div');
+                container.style.marginBottom = '0.5rem';
+                container.style.padding = '0.5rem';
+                container.style.background = '#fff';
+                container.style.borderRadius = '4px';
+
+                let html = `<p><strong>Chunk ${i + 1}:</strong></p>`;
+                if (item.fullUrl) {
+                    html += `<p>Full: <a href="${item.fullUrl}" target="_blank">Download</a> <audio controls src="${item.fullUrl}" style="max-width: 100%;"></audio></p>`;
+                }
+                if (item.vadUrl) {
+                    html += `<p>VAD: <a href="${item.vadUrl}" target="_blank">Download</a> <audio controls src="${item.vadUrl}" style="max-width: 100%;"></audio></p>`;
+                }
+                container.innerHTML = html;
+                debugAudioDiv.appendChild(container);
+            }
+
+            pageInfoSpan.textContent = `Page ${currentPage + 1} / ${totalPages}`;
+            btnPrevPage.disabled = currentPage === 0;
+            btnNextPage.disabled = currentPage >= totalPages - 1;
+        }
+
+        btnPrevPage.onclick = () => {
+            if (currentPage > 0) {
+                currentPage--;
+                renderDebugAudioPage();
+            }
+        };
+
+        btnNextPage.onclick = () => {
+            const totalPages = Math.ceil(debugAudioItems.length / ITEMS_PER_PAGE);
+            if (currentPage < totalPages - 1) {
+                currentPage++;
+                renderDebugAudioPage();
+            }
+        };
+
         btnConnect.onclick = async () => {
             const host = window.location.hostname || "localhost";
             ws = new WebSocket(`ws://${host}:8000/v1/audio/transcriptions`);
@@ -301,22 +466,19 @@
                     }
                     appendTranscript(data.text, data.confirmed_text, data.pending_text, data.is_final);
 
-                    // Show debug audio if present
-                    if (data.debug_audio_url && data.is_final) {
-                        const audioContainer = document.createElement("div");
-                        audioContainer.innerHTML = `<p><strong>Original+Enhanced Debug Audio:</strong> <a href="${data.debug_audio_url}" target="_blank">Download</a></p>
-                            <audio controls src="${data.debug_audio_url}"></audio>`;
-                        transcriptDiv.appendChild(audioContainer);
-                        transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
-                    }
+                    // Debug: log if debug audio is present
+                    console.log("DEBUG CLIENT: Received message, debug_audio_url:", data.debug_audio_url ? "PRESENT" : "MISSING", ", debug_audio_url_vad:", data.debug_audio_url_vad ? "PRESENT" : "MISSING");
 
-                    // Show VAD debug audio if present
-                    if (data.debug_audio_url_vad && data.is_final) {
-                        const audioContainer = document.createElement("div");
-                        audioContainer.innerHTML = `<p><strong>Post-VAD Debug Audio:</strong> <a href="${data.debug_audio_url_vad}" target="_blank">Download</a></p>
-                            <audio controls src="${data.debug_audio_url_vad}"></audio>`;
-                        transcriptDiv.appendChild(audioContainer);
-                        transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+                    // Add debug audio to pagination array if present
+                    if (data.debug_audio_url || data.debug_audio_url_vad) {
+                        console.log("DEBUG CLIENT: Adding debug audio to pagination, URL length:", data.debug_audio_url?.length);
+                        debugAudioItems.push({
+                            fullUrl: data.debug_audio_url || null,
+                            vadUrl: data.debug_audio_url_vad || null
+                        });
+                        // Auto-navigate to last page when new audio arrives
+                        currentPage = Math.floor((debugAudioItems.length - 1) / ITEMS_PER_PAGE);
+                        renderDebugAudioPage();
                     }
                 } else if (data.type === "error") {
                     console.error("Server error:", data);
@@ -340,6 +502,11 @@
 
         btnStart.onclick = async () => {
             try {
+                // Send config to server FIRST (before starting audio)
+                const configMsg = getConfigObj();
+                console.log("Sending config:", configMsg);
+                ws.send(JSON.stringify(configMsg));
+
                 // Initialize Audio Context
                 audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
 
@@ -374,11 +541,6 @@
                         ws.send(buffer.buffer);
                     }
                 };
-
-                // Send config to server
-                const configMsg = getConfigObj();
-                console.log("Sending config:", configMsg);
-                ws.send(JSON.stringify(configMsg));
 
                 setStatus("Recording...", "recording");
                 btnStart.disabled = true;

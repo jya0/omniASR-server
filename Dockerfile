@@ -8,23 +8,19 @@ ENV DEBIAN_FRONTEND=noninteractive
 # ============================================
 # System dependencies
 # ============================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-dev \
-    python3-venv \
-    libsndfile1 \
-    ffmpeg \
-    git \
-    curl \
-    build-essential \
-    cmake \
-    ca-certificates \
-    libatomic1 \
-    && rm -rf /var/lib/apt/lists/*
+
 
 # Install Rust/Cargo (required for deepfilterlib)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:$PATH"
+# RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+# ENV PATH="/root/.cargo/bin:$PATH"
+
+# 3. Copy Rust and Cargo directories
+COPY --from=docker.io/library/rust:1.83-slim-bookworm /usr/local/cargo /usr/local/cargo
+COPY --from=docker.io/library/rust:1.83-slim-bookworm /usr/local/rustup /usr/local/rustup
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -40,11 +36,12 @@ ENV VIRTUAL_ENV="/app/.venv"
 # Python dependencies (using lock file from working venv)
 # ============================================
 COPY requirements-lock.txt .
-COPY ten-vad ./ten-vad
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --no-deps -r requirements-lock.txt && \
-    uv pip install ./ten-vad
+    uv pip install --no-deps -r requirements-lock.txt
 
+
+COPY ten-vad ./ten-vad
+RUN uv pip install ./ten-vad
 # Install LLVM C++ runtime required by ten_vad's native library
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libc++1 \

@@ -56,6 +56,18 @@ class HallucinationDetector:
             model: ASRModel instance for consistency check (optional)
         """
         self._model = model
+        
+        # Initialize flags from global config
+        self.energy_gating_enabled = config.hallucination.energy_gating_enabled
+        self.min_rms_threshold = config.hallucination.min_rms_threshold
+        
+        self.consistency_check_enabled = config.hallucination.consistency_check_enabled
+        self.consistency_threshold = config.hallucination.consistency_threshold
+        
+        self.ngram_detection_enabled = config.hallucination.ngram_detection_enabled
+        self.max_words_per_second = config.hallucination.max_words_per_second
+        self.max_word_repeat = config.hallucination.max_word_repeat
+        self.max_same_word_ratio = config.hallucination.max_same_word_ratio
     
     @staticmethod
     def get_rms(audio: np.ndarray) -> float:
@@ -71,11 +83,11 @@ class HallucinationDetector:
         Returns:
             True if audio should be transcribed, False if too quiet
         """
-        if not config.hallucination.energy_gating_enabled:
+        if not self.energy_gating_enabled:
             return True
             
         rms = self.get_rms(audio)
-        return rms >= config.hallucination.min_rms_threshold
+        return rms >= self.min_rms_threshold
     
     def consistency_check(self, audio: np.ndarray, full_text: str) -> bool:
         """
@@ -85,7 +97,7 @@ class HallucinationDetector:
         Returns:
             True if transcription is consistent (likely real), False if inconsistent
         """
-        if not config.hallucination.consistency_check_enabled:
+        if not self.consistency_check_enabled:
             return True
             
         if self._model is None:
@@ -110,7 +122,7 @@ class HallucinationDetector:
             from difflib import SequenceMatcher
             ratio = SequenceMatcher(None, full_text.lower(), combined_text.lower()).ratio()
             
-            return ratio >= config.hallucination.consistency_threshold
+            return ratio >= self.consistency_threshold
             
         except Exception:
             return True  # On error, assume valid
@@ -128,7 +140,7 @@ class HallucinationDetector:
         Returns:
             True if text looks normal, False if suspicious pattern detected
         """
-        if not config.hallucination.ngram_detection_enabled:
+        if not self.ngram_detection_enabled:
             return True
             
         if not text or len(text.strip()) < 3:
@@ -141,12 +153,12 @@ class HallucinationDetector:
         # Speaking rate check: Max ~9 words/second (fastest human speech)
         if audio_duration and audio_duration > 0.1:
             words_per_second = len(words) / audio_duration
-            if words_per_second > config.hallucination.max_words_per_second:
+            if words_per_second > self.max_words_per_second:
                 return False  # Impossible speaking rate
             
         # Check consecutive repetition
         repeat_count = 1
-        max_repeat = config.hallucination.max_word_repeat
+        max_repeat = self.max_word_repeat
         
         for i in range(1, len(words)):
             if words[i] == words[i-1]:
@@ -163,7 +175,7 @@ class HallucinationDetector:
             _, top_count = word_counts.most_common(1)[0]
             ratio = top_count / len(words)
             
-            if ratio > config.hallucination.max_same_word_ratio and top_count >= 3:
+            if ratio > self.max_same_word_ratio and top_count >= 3:
                 return False
         
         return True
@@ -277,12 +289,18 @@ class StreamingTranscriber:
     max_buffer_duration: float = field(default_factory=lambda: config.streaming.max_buffer_duration)
     
     _noise_removal_attenuation: float = field(default_factory=lambda: config.noise_removal.attenuation)
+    
+    # Debug Audio Config
+    debug_audio_enabled: bool = True  # Default enabled for backward compat
+    debug_audio_interval: float = 10.0  # Flush every 10 seconds
 
     # State
     _started: bool = False
     _total_audio_duration: float = 0
     _debug_audio: list = field(default_factory=list) # Accumulate audio for debug
     _debug_audio_vad: list = field(default_factory=list) # Accumulate VAD audio for debug
+    _last_debug_flush_time: float = 0.0  # Track last debug audio flush time
+    _raw_audio_duration: float = 0.0  # Track raw input audio duration for debug flush
 
     def __post_init__(self):
         print("DEBUG: BASE64 VERSION ACTIVE (StreamingTranscriber initialized)")
@@ -318,6 +336,47 @@ class StreamingTranscriber:
         self._total_audio_duration = 0
         self._debug_audio = []
         self._debug_audio_vad = []
+        self._last_debug_flush_time = 0.0
+        self._raw_audio_duration = 0.0
+    
+    def get_debug_audio(self, clear: bool = True) -> tuple[str | None, str | None]:
+        """
+        Get accumulated debug audio as base64 data URIs and optionally clear buffers.
+        
+        Returns:
+            Tuple of (full_audio_uri, vad_audio_uri) - either may be None
+        """
+        if not self.debug_audio_enabled:
+            return None, None
+            
+        full_uri = None
+        vad_uri = None
+        
+        try:
+            if self._debug_audio:
+                full_audio = np.concatenate(self._debug_audio)
+                buf = io.BytesIO()
+                sf.write(buf, full_audio, 16000, format='WAV')
+                buf.seek(0)
+                b64_data = base64.b64encode(buf.read()).decode('utf-8')
+                full_uri = f"data:audio/wav;base64,{b64_data}"
+                
+            if self._debug_audio_vad:
+                vad_audio = np.concatenate(self._debug_audio_vad)
+                buf_vad = io.BytesIO()
+                sf.write(buf_vad, vad_audio, 16000, format='WAV')
+                buf_vad.seek(0)
+                b64_vad = base64.b64encode(buf_vad.read()).decode('utf-8')
+                vad_uri = f"data:audio/wav;base64,{b64_vad}"
+                
+        except Exception as e:
+            print(f"DEBUG: Failed to generate debug audio: {e}")
+            
+        if clear:
+            self._debug_audio = []
+            self._debug_audio_vad = []
+            
+        return full_uri, vad_uri
 
     def process(self, audio: np.ndarray) -> list[StreamingResult]:
         """
@@ -336,6 +395,10 @@ class StreamingTranscriber:
         audio = np.asarray(audio, dtype=np.float32).flatten()
         if audio.max() > 1.0:
             audio = audio / 32768.0  # Convert from int16
+        
+        # Track raw audio duration for debug flush (independent of processing)
+        audio_duration = len(audio) / 16000.0  # Assuming 16kHz sample rate
+        self._raw_audio_duration += audio_duration
             
         # --- 1. Dynamic Range Compression (Pedalboard) ---
         audio = self.processor.process_compressor(audio)
@@ -439,6 +502,40 @@ class StreamingTranscriber:
                     if self.on_result:
                         self.on_result(result)
 
+        # --- Periodic Debug Audio Flush ---
+        # Check if we should flush debug audio based on time elapsed
+        # Must be done BEFORE speech_ended reset to avoid timing issues
+        
+        # Debug: Log audio duration tracking
+        if self.debug_audio_enabled:
+            elapsed_since_flush = self._raw_audio_duration - self._last_debug_flush_time
+            print(f"DEBUG flush check: raw_duration={self._raw_audio_duration:.2f}s, last_flush={self._last_debug_flush_time:.2f}s, elapsed={elapsed_since_flush:.2f}s, interval={self.debug_audio_interval}s")
+        
+        if self.debug_audio_enabled and self._raw_audio_duration - self._last_debug_flush_time >= self.debug_audio_interval:
+            print(f"DEBUG: Triggering debug audio flush at {self._raw_audio_duration:.2f}s")
+            full_uri, vad_uri = self.get_debug_audio(clear=True)
+            self._last_debug_flush_time = self._raw_audio_duration
+            
+            print(f"DEBUG: Got debug audio URIs - full: {bool(full_uri)}, vad: {bool(vad_uri)}, results count: {len(results)}")
+            
+            # If we have results, attach debug audio to the last one
+            # Otherwise create a minimal result just for debug audio
+            if results and (full_uri or vad_uri):
+                results[-1].debug_audio_file = full_uri
+                results[-1].debug_audio_file_vad = vad_uri
+                print(f"DEBUG: Attached debug audio to existing result")
+            elif full_uri or vad_uri:
+                # Create a debug-only result
+                print(f"DEBUG: Creating debug-only result")
+                results.append(StreamingResult(
+                    text="",
+                    confirmed_text=self.agreement._confirmed if hasattr(self.agreement, '_confirmed') else "",
+                    pending_text="",
+                    is_final=False,
+                    debug_audio_file=full_uri,
+                    debug_audio_file_vad=vad_uri,
+                ))
+
         # If speech ended (transition from speech to silence), finalize
         if speech_ended:
             # Get final snapshot (mark as final)
@@ -456,6 +553,10 @@ class StreamingTranscriber:
             self.buffer.clear()
             self.agreement.reset()
             self._total_audio_duration = 0  # Reset tracker
+            
+            # NOTE: Do NOT reset _raw_audio_duration and _last_debug_flush_time here!
+            # Debug audio should accumulate across buffer resets (soft-limit triggers)
+            # Only reset when connection closes or explicit stop
 
         return results
 
@@ -606,51 +707,68 @@ class StreamingTranscriber:
         """
         if not session_config:
             return
+        
+        print(f"DEBUG apply_config: Received config: {session_config}")
             
         # VAD Settings
         if "vad_enabled" in session_config:
-            # Re-initialize VAD if enabled changes or we need to update params
-            # Note: For now we just update top level properties where possible
-            pass # VAD class structure makes this tricky, mostly handled by process() checks?
-            # Actually, config.vad.enabled is checked in process(). 
-            # We need to store session overrides.
-            # Best approach: Update internal component properties directly
+            old_val = self.vad_enabled
+            self.vad_enabled = session_config["vad_enabled"]
+            print(f"DEBUG apply_config: vad_enabled changed {old_val} -> {self.vad_enabled}")
             
-        # 1. Update VAD
-        if self.vad:
-             if "vad_silence_duration" in session_config:
-                 self.vad.silence_duration = session_config["vad_silence_duration"]
-             # vad_enabled is checked in self.process via config global. 
-             # We should change self.process to use an instance variable.
+        if self.vad and "vad_silence_duration" in session_config:
+            self.vad.silence_duration = session_config["vad_silence_duration"]
              
-        # 2. Update Noise Removal
+        # Noise Removal Settings
+        if "noise_removal_enabled" in session_config:
+            old_val = self.noise_removal_enabled
+            self.noise_removal_enabled = session_config["noise_removal_enabled"]
+            print(f"DEBUG apply_config: noise_removal_enabled changed {old_val} -> {self.noise_removal_enabled}")
+            
         if "noise_removal_attenuation" in session_config:
-            # We need to store this for use in process()
             self._noise_removal_attenuation = session_config["noise_removal_attenuation"]
             
-        # 3. Update Audio Processor (Compressor / Noise Gate)
+        # Audio Processor Settings (Compressor / Noise Gate)
         if self.processor:
             if "compressor_enabled" in session_config:
-                 self.processor.compressor_enabled = session_config["compressor_enabled"]
+                self.processor.compressor_enabled = session_config["compressor_enabled"]
             if "compressor_threshold_db" in session_config:
-                 self.processor.compressor_threshold = session_config["compressor_threshold_db"]
+                self.processor.compressor_threshold = session_config["compressor_threshold_db"]
             if "compressor_ratio" in session_config:
-                 self.processor.compressor_ratio = session_config["compressor_ratio"]
+                self.processor.compressor_ratio = session_config["compressor_ratio"]
                  
             if "noise_gate_enabled" in session_config:
-                 self.processor.noise_gate_enabled = session_config["noise_gate_enabled"]
+                self.processor.noise_gate_enabled = session_config["noise_gate_enabled"]
             if "noise_gate_threshold_db" in session_config:
-                 self.processor.noise_gate_threshold = session_config["noise_gate_threshold_db"]
+                self.processor.noise_gate_threshold = session_config["noise_gate_threshold_db"]
 
-        # 4. Hallucination
-        if "hallucination_energy_gating" in session_config:
-            # Update config global? NO. 
-            # We need to update the detector's internal flags if possible, or pass overrides.
-            # The HallucinationDetector reads from config.hallucination.
-            # We should probably modify HallucinationDetector to allow status overrides.
-            pass
+        # Streaming Settings
+        if "max_buffer_duration" in session_config:
+            self.max_buffer_duration = session_config["max_buffer_duration"]
+
+        # Hallucination Settings
+        # Update flags in detector
+        if self.hallucination_detector:
+             if "hallucination_energy_gating" in session_config:
+                 self.hallucination_detector.energy_gating_enabled = session_config["hallucination_energy_gating"]
+                 
+             if "hallucination_min_rms" in session_config:
+                 self.hallucination_detector.min_rms_threshold = session_config["hallucination_min_rms"]
+             
+             if "hallucination_ngram_enabled" in session_config:
+                 self.hallucination_detector.ngram_detection_enabled = session_config["hallucination_ngram_enabled"]
+                 
+             if "hallucination_max_word_repeat" in session_config:
+                 self.hallucination_detector.max_word_repeat = session_config["hallucination_max_word_repeat"]
+
+        # Debug Audio Settings
+        if "debug_audio_enabled" in session_config:
+            self.debug_audio_enabled = session_config["debug_audio_enabled"]
             
-        # Store for use in process()
+        if "debug_audio_interval" in session_config:
+            self.debug_audio_interval = session_config["debug_audio_interval"]
+
+        # Store for reference
         self._session_config = session_config
 
     def reset(self) -> None:

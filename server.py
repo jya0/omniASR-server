@@ -424,6 +424,14 @@ async def websocket_transcription(websocket: WebSocket):
 
                 # Send results
                 for result in results:
+                    # Extract debug audio URLs if present
+                    debug_url = None
+                    debug_url_vad = None
+                    if hasattr(result, "debug_audio_file") and result.debug_audio_file:
+                        debug_url = result.debug_audio_file
+                    if hasattr(result, "debug_audio_file_vad") and result.debug_audio_file_vad:
+                        debug_url_vad = result.debug_audio_file_vad
+                        
                     await websocket.send_json(
                         StreamingMessage(
                             text=result.text,
@@ -432,6 +440,8 @@ async def websocket_transcription(websocket: WebSocket):
                             is_final=result.is_final,
                             latency_ms=result.latency_ms,
                             audio_duration=result.audio_duration,
+                            debug_audio_url=debug_url,
+                            debug_audio_url_vad=debug_url_vad,
                         ).model_dump()
                     )
 

@@ -82,6 +82,10 @@ class WebSocketConfig(BaseModel):
     
     # Streaming
     max_buffer_duration: Optional[float] = None
+    
+    # Debug Audio
+    debug_audio_enabled: Optional[bool] = None
+    debug_audio_interval: Optional[float] = None  # Flush interval in seconds (default 10.0)
 
 
 class HealthResponse(BaseModel):
