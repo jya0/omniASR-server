@@ -462,7 +462,7 @@
 
         btnConnect.onclick = async () => {
             const host = window.location.hostname || "localhost";
-            ws = new WebSocket(`ws://${host}:8000/v1/audio/transcriptions`);
+            ws = new WebSocket(`ws://${host}:8001/v1/audio/transcriptions`);
 
             ws.onopen = () => {
                 setStatus("Connected", "connected");

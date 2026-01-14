@@ -54,13 +54,10 @@ class AudioConfig:
 
 @dataclass
 class StreamingConfig:
-    """Streaming and chunking settings."""
+    """Streaming settings for Growing Window approach."""
 
-    chunk_duration: float = 5.0  # seconds per processing chunk
-    overlap_ratio: float = 0.5  # overlap between chunks (0.5 = 50%)
-    min_chunk_duration: float = 0.3  # minimum audio to process
     max_buffer_duration: float = 8.0  # max buffer before forced flush
-    soft_reset_threshold: float = 0.6  # trigger early commit at 80% of max_buffer
+    soft_reset_threshold: float = 0.6  # trigger early commit at 60% of max_buffer
 
 
 @dataclass
@@ -147,7 +144,6 @@ class ServerConfig:
 class StreamingEnvConfig:
     """Streaming settings from environment."""
 
-    chunk_duration: float = field(default_factory=lambda: env_float("CHUNK_DURATION", 5.0))
     vad_enabled: bool = field(default_factory=lambda: env_bool("VAD_ENABLED", False))
     noise_removal_enabled: bool = field(default_factory=lambda: env_bool("NOISE_REMOVAL_ENABLED", False))
 
@@ -188,7 +184,6 @@ class Config:
         env_config = StreamingEnvConfig()
 
         streaming = StreamingConfig()
-        streaming.chunk_duration = env_config.chunk_duration
 
         vad = VADConfig()
         vad.enabled = env_config.vad_enabled

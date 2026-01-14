@@ -66,36 +66,26 @@ class AudioChunk:
 
 class AudioBuffer:
     """
-    Ring buffer for audio with overlap chunking.
+    Ring buffer for audio with Growing Window approach for streaming ASR.
 
     Handles:
     - Accumulating incoming audio
-    - Producing overlapping chunks for processing
+    - Returning entire buffer window for processing
     - Tracking timestamps
     """
 
     def __init__(
         self,
         sample_rate: int = None,
-        chunk_duration: float = None,
-        overlap_ratio: float = None,
         max_duration: float = None,
     ):
         self.sample_rate = sample_rate or config.audio.sample_rate
-        self.chunk_duration = chunk_duration or config.streaming.chunk_duration
-        self.overlap_ratio = overlap_ratio or config.streaming.overlap_ratio
         self.max_duration = max_duration or config.streaming.max_buffer_duration
-
-        # Calculate sizes in samples
-        self.chunk_samples = int(self.chunk_duration * self.sample_rate)
-        self.overlap_samples = int(self.chunk_samples * self.overlap_ratio)
-        self.step_samples = self.chunk_samples - self.overlap_samples
         self.max_samples = int(self.max_duration * self.sample_rate)
 
         # Buffer state
         self._buffer: list[np.ndarray] = []
         self._total_samples = 0
-        self._processed_until = 0  # samples already processed
         self._stream_time = 0.0    # total time in stream
 
     def add(self, audio: np.ndarray) -> None:
@@ -127,75 +117,6 @@ class AudioBuffer:
             return np.array([], dtype=np.float32)
         return np.concatenate(self._buffer)
 
-    def get_unprocessed(self) -> np.ndarray:
-        """Get all unprocessed audio."""
-        full = self._get_full_buffer()
-        return full[self._processed_until:]
-
-    def has_chunk(self) -> bool:
-        """Check if there's enough audio for a chunk."""
-        unprocessed = self._total_samples - self._processed_until
-        return unprocessed >= self.chunk_samples
-
-    def get_next_chunk(self) -> AudioChunk | None:
-        """
-        Get the next chunk for processing (with overlap).
-        Returns None if not enough audio.
-        """
-        if not self.has_chunk():
-            return None
-
-        full = self._get_full_buffer()
-
-        # Get chunk with overlap from previous
-        start = max(0, self._processed_until - self.overlap_samples)
-        end = self._processed_until + self.step_samples + self.overlap_samples
-        end = min(end, len(full))
-
-        chunk_audio = full[start:end]
-
-        # Calculate timestamps
-        start_time = start / self.sample_rate
-        end_time = end / self.sample_rate
-
-        # Advance processed pointer
-        self._processed_until += self.step_samples
-
-        return AudioChunk(
-            audio=chunk_audio,
-            start_time=start_time,
-            end_time=end_time,
-            is_final=False,
-        )
-
-    def get_remaining(self, mark_final: bool = True) -> AudioChunk | None:
-        """
-        Get remaining unprocessed audio (for end of stream).
-        Used when silence is detected or stream ends.
-        """
-        unprocessed = self._total_samples - self._processed_until
-        if unprocessed < int(config.streaming.min_chunk_duration * self.sample_rate):
-            return None
-
-        full = self._get_full_buffer()
-
-        # Include overlap from previous
-        start = max(0, self._processed_until - self.overlap_samples)
-        chunk_audio = full[start:]
-
-        start_time = start / self.sample_rate
-        end_time = len(full) / self.sample_rate
-
-        # Mark all as processed
-        self._processed_until = len(full)
-
-        return AudioChunk(
-            audio=chunk_audio,
-            start_time=start_time,
-            end_time=end_time,
-            is_final=mark_final,
-        )
-
     def get_current_window(self) -> AudioChunk | None:
         """
         Get all accumulated audio in the buffer (Growing Window).
@@ -216,25 +137,6 @@ class AudioBuffer:
         """Clear the buffer."""
         self._buffer = []
         self._total_samples = 0
-        self._processed_until = 0
-
-    def clear_confirmed(self, until_time: float) -> None:
-        """
-        Clear buffer up to a confirmed timestamp.
-        Called after LocalAgreement confirms a prefix.
-        """
-        until_samples = int(until_time * self.sample_rate)
-
-        full = self._get_full_buffer()
-        if until_samples >= len(full):
-            self.clear()
-            return
-
-        # Keep audio from until_samples onwards
-        remaining = full[until_samples:]
-        self._buffer = [remaining] if len(remaining) > 0 else []
-        self._total_samples = len(remaining)
-        self._processed_until = max(0, self._processed_until - until_samples)
 
     @property
     def duration(self) -> float:

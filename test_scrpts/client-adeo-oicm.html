@@ -251,9 +251,26 @@
         <div class="config-group">
             <div class="config-row">
                 <label>
+                    Language:
+                    <select id="cfg_language">
+                        <option value="">(Auto-detect / Default)</option>
+                        <option value="eng_Latn">English (eng_Latn)</option>
+                        <option value="arb_Arab">Arabic - Standard (arb_Arab)</option>
+                        <option value="afb_Arab">Arabic - Gulf (afb_Arab)</option>
+                    </select>
+                    <span class="tooltip"
+                        data-text="Target language for transcription. Leave empty to use server default.">ⓘ</span>
+                </label>
+            </div>
+        </div>
+
+        <div class="config-group">
+            <div class="config-row">
+                <label>
                     <input type="checkbox" id="cfg_vad_enabled" checked> Enable VAD
                     <span class="tooltip"
                         data-text="Voice Activity Detection: Filters out silence and non-speech audio to reduce load and hallucinations.">ⓘ</span>
+                </label>
                 </label>
             </div>
             <div class="config-row">
@@ -392,6 +409,7 @@
 
         // Config elements
         const inputs = [
+            'cfg_language',
             'cfg_vad_enabled', 'cfg_vad_silence',
             'cfg_nr_enabled', 'cfg_nr_att',
             'cfg_comp_enabled', 'cfg_comp_thresh', 'cfg_comp_ratio',
@@ -407,6 +425,7 @@
             return {
                 type: "config",
                 sample_rate: SAMPLE_RATE,
+                language: document.getElementById('cfg_language').value || null,
                 vad_enabled: document.getElementById('cfg_vad_enabled').checked,
                 vad_silence_duration: parseFloat(document.getElementById('cfg_vad_silence').value),
                 noise_removal_enabled: document.getElementById('cfg_nr_enabled').checked,

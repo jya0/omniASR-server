@@ -290,6 +290,9 @@ class StreamingTranscriber:
     
     _noise_removal_attenuation: float = field(default_factory=lambda: config.noise_removal.attenuation)
     
+    # Language setting (None = use model default from config)
+    lang: str | None = field(default_factory=lambda: config.model.default_lang)
+    
     # Debug Audio Config
     debug_audio_enabled: bool = True  # Default enabled for backward compat
     debug_audio_interval: float = 10.0  # Flush every 10 seconds
@@ -575,8 +578,8 @@ class StreamingTranscriber:
                 audio_duration=chunk.end_time,
             )
         
-        # 2. Transcribe
-        transcribe_result = self.model.transcribe_audio(chunk.audio)
+        # 2. Transcribe (with optional language override)
+        transcribe_result = self.model.transcribe_audio(chunk.audio, lang=self.lang)
         
         # 3. N-gram, blocklist, and speaking rate check
         audio_duration = chunk.end_time - chunk.start_time
@@ -649,10 +652,11 @@ class StreamingTranscriber:
             return None
 
         # Process any remaining audio
-        remaining = self.buffer.get_remaining(mark_final=True)
+        remaining = self.buffer.get_current_window()
         result = None
 
         if remaining:
+            remaining.is_final = True  # Mark as final
             result = self._process_chunk(remaining)
             if result and self.on_result:
                 self.on_result(result)
@@ -767,6 +771,13 @@ class StreamingTranscriber:
             
         if "debug_audio_interval" in session_config:
             self.debug_audio_interval = session_config["debug_audio_interval"]
+
+        # Language Setting
+        if "language" in session_config:
+            # Empty string or None means use default
+            lang_val = session_config["language"]
+            self.lang = lang_val if lang_val else config.model.default_lang
+            print(f"DEBUG apply_config: language set to {self.lang}")
 
         # Store for reference
         self._session_config = session_config

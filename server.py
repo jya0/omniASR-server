@@ -5,7 +5,7 @@ from pathlib import Path
 # Use local models-cache folder by default
 base_path = Path(__file__).parent
 os.environ["XDG_CACHE_HOME"] = os.getenv("XDG_CACHE_HOME", str(base_path / "models-cache"))
-# os.environ["XDG_CACHE_HOME"] = os.getenv("XDG_CACHE_HOME", str(base_path / "models-cache-bc"))
+# os.environ["XDG_CACHE_HOME"] = str(base_path / "models-cache2")
 
 """
 omniASR Streaming Server - OpenAI-compatible ASR API.
@@ -405,7 +405,15 @@ async def websocket_transcription(websocket: WebSocket):
                                 debug_audio_url_vad=debug_url_vad
                             ).model_dump()
                             
-                            print(f"DEBUG: Sending Final Message to Client: {msg}")
+                            # Truncate debug audio URLs for logging
+                            log_msg = msg.copy()
+                            if log_msg.get('debug_audio_url'):
+                                url = log_msg['debug_audio_url']
+                                log_msg['debug_audio_url'] = f"{url[:50]}...({len(url)} chars)...{url[-30:]}"
+                            if log_msg.get('debug_audio_url_vad'):
+                                url = log_msg['debug_audio_url_vad']
+                                log_msg['debug_audio_url_vad'] = f"{url[:50]}...({len(url)} chars)...{url[-30:]}"
+                            print(f"DEBUG: Sending Final Message to Client: {log_msg}")
                             await websocket.send_json(msg)
                         break
 

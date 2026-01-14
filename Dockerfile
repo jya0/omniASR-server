@@ -59,17 +59,24 @@ ENV FAIRSEQ2_CACHE_DIR=/models/fairseq2/assets
 ENV XDG_CACHE_HOME=/models
 
 # ============================================
-# Configuration
+# Configuration - All defaults from config.py
+# Edit these for easy customization
 # ============================================
+# Server
 ENV HOST=0.0.0.0
 ENV PORT=8080
 ENV MAX_CONCURRENT_REQUESTS=100
 ENV MAX_WEBSOCKET_CONNECTIONS=50
-ENV VAD_ENABLED=true
-ENV NOISE_REMOVAL_ENABLED=true
-ENV MODEL_CARD=omniASR_LLM_1B_v2
-ENV DEFAULT_LANG=
+
+# Model
+ENV MODEL_CARD=omniASR_LLM_7B_v2
+ENV DEFAULT_LANG=eng_Latn
+ENV BATCH_SIZE=1
 ENV DEVICE=
+
+# Streaming
+ENV VAD_ENABLED=false
+ENV NOISE_REMOVAL_ENABLED=false
 
 # ============================================
 # Redirect all writes to /tmp for read-only filesystem compatibility
